@@ -6,6 +6,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number, e.g. 1.0.1"
+        required: true
+        default: "1.0.0"
 
 permissions:
   contents: write
@@ -30,8 +35,9 @@ jobs:
 
       - name: Build Picture Perfect.app
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$GITHUB_REF_TYPE" != "tag" ]; then VERSION="0.0.0"; fi
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           APP_VERSION="$VERSION" pyinstaller --noconfirm --clean packaging/PicturePerfect.spec
 
       - name: Check everything inside the app works
@@ -50,9 +56,11 @@ jobs:
           path: Picture-Perfect-Mac.zip
 
       - name: Publish on the Releases page
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: Picture Perfect ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           files: Picture-Perfect-Mac.zip
           body: |
             **To install:** download **Picture-Perfect-Mac.zip** below, double-click it, and drag **Picture Perfect** into your **Applications** folder.

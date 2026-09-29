@@ -1306,11 +1306,26 @@ class Library:
             except (TypeError, ValueError):
                 w = h = 0
                 o = 1
+            has_time = bool(taken)
+            if not taken:
+                s_taken, _, _ = read_sidecar(src)
+                taken = s_taken
+                has_time = bool(taken)
+            if not taken:
+                taken, has_time, _ = date_from_filename(os.path.basename(src))
+            lat, lon = valid_coords(meta.get("GPSLatitude"), meta.get("GPSLongitude"))
+            if lat is None:
+                _, s_lat, s_lon = read_sidecar(src)
+                lat, lon = valid_coords(s_lat, s_lon)
+            camera = " ".join(x for x in (str(meta.get("Make") or "").strip(), str(meta.get("Model") or "").strip()) if x) or None
             item = {"i": idx, "src": src, "name": os.path.basename(src),
                     "folder": os.path.dirname(os.path.relpath(src, source)),
-                    "size": size, "kind": kind, "taken": taken, "width": w or None, "height": h or None,
+                    "size": size, "kind": kind, "taken": taken, "has_time": has_time,
+                    "width": w or None, "height": h or None,
                     "status": "new", "match": None, "match_new": None, "thumb": False,
-                    "q": None, "dhash": None, "flags": [], "burst": None, "keep": True, "why": ""}
+                    "q": None, "dhash": None, "flags": [], "burst": None, "keep": True, "why": "",
+                    "lat": lat, "lon": lon, "city": None, "camera": camera,
+                    "name_part": extract_name(os.path.basename(src)), "raw_of": None}
 
             # 1. byte-for-byte the same as a library photo or an earlier photo in this folder
             sha = None
@@ -1372,6 +1387,22 @@ class Library:
                         ref[("new", idx)] = (my_ts, my_asp)
             items.append(item)
 
+        # RAW + JPEG of the same shot travel together
+        by_stem = defaultdict(list)
+        for it in items:
+            by_stem[(os.path.dirname(it["src"]).lower(), os.path.splitext(it["name"])[0].lower())].append(it)
+        for group in by_stem.values():
+            raws = [x for x in group if os.path.splitext(x["name"])[1].lower() in RAW_EXT]
+            lead = [x for x in group if os.path.splitext(x["name"])[1].lower() not in RAW_EXT]
+            if len(raws) == 1 and len(lead) == 1:
+                raws[0]["raw_of"] = lead[0]["i"]
+                lead[0]["raw"] = raws[0]["name"]
+        # place names for photos that carry GPS
+        if any(it["lat"] is not None for it in items) and self.geo.load(job):
+            for it in items:
+                if it["lat"] is not None:
+                    it["city"] = self.geo.city(it["lat"], it["lon"])
+                    it["place"] = self.geo.label(it["lat"], it["lon"])
         self.pending_import = {"source": source, "items": items}
         counts = Counter(i["status"] for i in items)
         return {"import_check": True, "total": len(items), "new": counts["new"], "exact": counts["exact"],
@@ -1759,7 +1790,10 @@ class Library:
                 if o:
                     d["other"] = {k: o[k] for k in ("i", "name", "folder", "size", "width", "height", "taken")}
             out.append(d)
-        return {"source": p["source"], "items": out}
+        groups = [{"key": g["key"], "name": g["name"], "start": g["start"], "end": g["end"], "count": g["count"],
+                   "thumbs": g["thumbs"][:1]} for g in self.groups()[:200]]
+        return {"source": p["source"], "items": out, "settings": self.settings(), "albums": groups,
+                "library": os.path.basename(self.root.rstrip(os.sep)) or self.root}
 
     def import_thumb(self, idx):
         return os.path.join(self.data, "import-check", "%d.jpg" % int(idx))
@@ -1791,15 +1825,23 @@ class Library:
             img.save(big, "JPEG", quality=85)
         return big, "image/jpeg"
 
-    def commit_import(self, job, include, ratings=None):
+    def commit_import(self, job, include, ratings=None, event=None, shift=0, album=None,
+                      rename=True, delete_source=False, names=None):
         p = getattr(self, "pending_import", None)
         if not p:
             raise ValueError("Please check the folder again.")
         want = set(int(i) for i in include)
+        # a RAW always comes along with its JPEG
+        for it in p["items"]:
+            if it.get("raw_of") is not None and it["raw_of"] in want:
+                want.add(it["i"])
         ratings = {int(k): int(v) for k, v in (ratings or {}).items() if v}
         chosen = [it for it in p["items"] if it["i"] in want]
         rated = {}
-        job.step("Copying new photos", len(chosen))
+        copied_ok = []
+        names = {int(k): v for k, v in (names or {}).items()}
+        named_paths = {}
+        job.step("Copying photos to your drive", len(chosen))
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H%M")
         dest_dir = os.path.join(self.root, INBOX, stamp)
         for it in chosen:
@@ -1807,6 +1849,10 @@ class Library:
                 os.makedirs(dest_dir, exist_ok=True)
                 dest = unique_path(os.path.join(dest_dir, it["name"]))
                 shutil.copy2(it["src"], dest)
+                if os.path.getsize(dest) == os.path.getsize(it["src"]):
+                    copied_ok.append(it["src"])
+                if it["i"] in names:
+                    named_paths[os.path.relpath(dest, self.root)] = names[it["i"]]
                 if it["i"] in ratings:
                     rated[os.path.relpath(dest, self.root)] = ratings[it["i"]]
                 side = find_sidecar(it["src"])
@@ -1814,12 +1860,62 @@ class Library:
                     shutil.copy2(side, dest + ".json")
             job.done += 1
         self.cancel_import()
-        result = self.scan(job, batch="import-" + stamp)
+        batch = "import-" + stamp
+        result = self.scan(job, batch=batch)
         if rated:
             self.x("UPDATE files SET rating=?, rating_pending=1 WHERE path=?",
                    [(v, k) for k, v in rated.items()], many=True)
-        result.update({"copied": len(chosen), "skipped": len(p["items"]) - len(chosen)})
+        ids = [r["id"] for r in self.q("SELECT id FROM files WHERE status='active' AND pair_of IS NULL AND batch=?", (batch,))]
+        if ids and event:
+            self.edit(ids, title=event)
+        if ids and shift:
+            dated = [r["id"] for r in self.q("SELECT id FROM files WHERE batch=? AND pair_of IS NULL AND NOT " + NEEDS_SQL, (batch,))]
+            if dated:
+                self.edit(dated, shift=int(shift))
+        if ids and album:
+            try:
+                self.add_to_group(ids, album, keep_dates=True)
+            except ValueError:
+                pass
+        # names you typed for single photos win over the batch name
+        for path, nm in named_paths.items():
+            row = self.q("SELECT id FROM files WHERE path=? AND pair_of IS NULL", (path,))
+            if row:
+                self.edit([row[0]["id"]], title=nm)
+        waiting = self.q("SELECT COUNT(*) AS n FROM files WHERE batch=? AND pair_of IS NULL AND " + NEEDS_SQL, (batch,))[0]["n"]
+        filed = {}
+        if ids and rename:
+            filed = self.apply(job, ids)
+        trashed_src = 0
+        if delete_source and copied_ok:
+            job.step("Moving the originals to the Trash", len(copied_ok))
+            trashed_src = self._trash_paths(copied_ok, job)
+        result.update({"copied": len(chosen), "skipped": len(p["items"]) - len(chosen),
+                       "imported_ids": ids, "waiting": waiting, "renamed": bool(rename),
+                       "filed": filed.get("moved", 0), "trashed_source": trashed_src,
+                       "folders": sorted(set(os.path.dirname(r["path"]) for r in self.q(
+                           "SELECT path FROM files WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)))[:6] if ids else []})
         return result
+
+    def _trash_paths(self, paths, job=None):
+        """Put files outside the library (e.g. on a memory card) in the Trash."""
+        if not IS_MAC:
+            return 0
+        done = 0
+        for k in range(0, len(paths), 40):
+            chunk = [f for f in paths[k:k + 40] if os.path.exists(f)]
+            if not chunk:
+                continue
+            items = ", ".join('POSIX file "%s"' % f.replace("\\", "\\\\").replace('"', '\\"') for f in chunk)
+            try:
+                subprocess.run(["osascript", "-e", 'tell application "Finder" to delete {%s}' % items],
+                               capture_output=True, timeout=300)
+            except Exception:
+                pass
+            done += sum(1 for f in chunk if not os.path.exists(f))
+            if job:
+                job.done += len(chunk)
+        return done
 
     # ======================================================================= #
     # Browse / search

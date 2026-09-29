@@ -9,27 +9,34 @@
 </head>
 <body>
 
-<header class="top">
-  <div class="brand">
-    <span class="mark" aria-hidden="true"></span>
-    <span>Picture Perfect</span>
+<div class="shell">
+<aside class="side" id="side">
+  <div class="brand-block">
+    <div class="brand-title">Picture Perfect</div>
+    <div class="brand-sub">Import &amp; organize your memories, beautifully.</div>
   </div>
-  <nav class="tabs" id="tabs" hidden>
-    <button data-tab="inbox">Drive Preview <span class="badge" id="b-inbox"></span></button>
-    <button data-tab="browse" class="on">Browse</button>
-    <button data-tab="dupes">Duplicates <span class="badge" id="b-dupes"></span></button>
-    <button data-tab="pick">Prune</button>
-    <button data-tab="people">People <span class="badge" id="b-people"></span></button>
-    <button data-tab="locations">Locations <span class="badge" id="b-loc"></span></button>
-    <button data-tab="organize">Organize</button>
+  <nav class="sidenav" id="tabs" hidden>
+    <button data-tab="browse" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="m4 16 5-5 4 4 3-3 4 4"/><circle cx="15.5" cy="9" r="1.5"/></svg><span>Library</span></button>
+    <button data-tab="people"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg><span>People</span><span class="badge" id="b-people"></span></button>
+    <button data-tab="locations"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>Places</span><span class="badge" id="b-loc"></span></button>
+    <button data-tab="favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-9.2-9.3C1.7 7.4 4 4.5 7.1 4.5c2 0 3.6 1.1 4.9 2.9 1.3-1.8 2.9-2.9 4.9-2.9 3.1 0 5.4 2.9 4.3 6.2C19.5 15.4 12 20 12 20z"/></svg><span>Favorites</span></button>
+    <div class="sidenav-sep"></div>
+    <button data-tab="import"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v4h16v-4"/></svg><span>Import</span></button>
+    <button data-tab="inbox"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/><path d="m14 16 2 2 4-4"/></svg><span>Drive Preview</span><span class="badge" id="b-inbox"></span></button>
+    <button data-tab="dupes"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span>Duplicates</span><span class="badge" id="b-dupes"></span></button>
+    <button data-tab="pick"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 17M8 15.5 20 7"/></svg><span>Prune</span></button>
+    <button data-tab="organize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Organize</span></button>
   </nav>
-  <div class="top-actions" id="top-actions" hidden>
-    <button class="ghost" id="btn-import" title="Copy new photos in from a card, phone export or download">Add photos…</button>
-    <button class="ghost" id="btn-scan" title="Look for changes on the drive">Rescan</button>
-    <button class="lib" id="btn-lib" title="Change photo folder"></button>
+  <div class="albums" id="albums" hidden>
+    <div class="albums-head">Albums</div>
+    <div id="album-list"></div>
   </div>
-</header>
-
+  <div class="side-foot" id="top-actions" hidden>
+    <button class="lib" id="btn-lib" title="Change photo folder"></button>
+    <button class="link" id="btn-scan" title="Look for changes on the drive">Rescan</button>
+  </div>
+</aside>
+<div class="main-col">
 <div id="job" class="job" hidden>
   <div class="job-text"><strong id="job-name"></strong> <span id="job-phase"></span> <span id="job-msg" class="muted"></span></div>
   <div class="bar"><div id="job-bar"></div></div>
@@ -87,35 +94,100 @@
     <div class="empty" id="browse-empty" hidden>No photos match.</div>
   </section>
 
-  <!-- Check before importing -->
-  <section id="v-import" class="view narrow" hidden>
-    <div class="head">
-      <div>
-        <div class="steps"><span class="on">1 · Check</span><span>2 · Preview names</span><span>3 · Save &amp; file</span></div>
-        <h2>Add photos</h2>
-        <p class="muted" id="im-sub"></p>
+  <!-- Import: rename before importing -->
+  <section id="v-import" class="view import-view" hidden>
+    <div class="stepper" id="im-steps">
+      <div class="st" data-s="1"><b>1</b>Import</div><i></i>
+      <div class="st" data-s="2"><b>2</b>Rename</div><i></i>
+      <div class="st" data-s="3"><b>3</b>Organize</div><i></i>
+      <div class="st" data-s="4"><b>4</b>Review</div>
+    </div>
+
+    <div class="im-start" id="im-start">
+      <h1 class="serif">Import Photos</h1>
+      <p class="sub">Choose a memory card, a phone export, or any folder. You'll see every photo's new name before anything is copied.</p>
+      <button class="dark big" id="btn-import">Choose folder or card…</button>
+      <p class="muted small" id="im-start-note"></p>
+    </div>
+
+    <div class="im-main" id="im-main" hidden>
+      <div class="im-left">
+        <h1 class="serif">Import Photos</h1>
+        <p class="sub">Rename before importing</p>
+        <div class="panel">
+          <label class="fl">Event / Collection<input id="im-event" placeholder="e.g. Lake Como" autocomplete="off" list="pp-albums"></label>
+          <label class="fl">Date<input id="im-date" type="date"></label>
+          <div class="hint" id="im-date-note"></div>
+          <label class="fl">Filename format
+            <select id="im-format">
+              <option value="1">YYYY.MM.DD HHMM Event</option>
+              <option value="0">YYYY.MM.DD Event</option>
+            </select></label>
+          <div class="hint">Preview: <span id="im-preview"></span></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">Destination</div>
+          <div class="tree" id="im-tree"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">Import Options</div>
+          <label class="opt"><input type="checkbox" id="op-rename" checked> Rename and file as shown</label>
+          <label class="opt"><input type="checkbox" id="op-dupes" checked> Leave out photos I already have</label>
+          <label class="opt"><input type="checkbox" id="op-album"> Add to album: <select id="op-album-sel"></select></label>
+          <label class="opt"><input type="checkbox" id="op-delete"> Move originals to the Trash after importing</label>
+          <p class="hint" id="op-delete-note" hidden>Only after each photo is safely copied. You can still Put Back from the Trash.</p>
+        </div>
       </div>
-      <button class="primary big" id="im-go-top"></button>
-    </div>
-    <div class="stats" id="im-stats"></div>
-    <div id="im-similar-wrap" hidden>
-      <h3 class="sec">Photos you may already have</h3>
-      <p class="hint">Each new photo is shown next to the one it matches. They're left out unless you choose <b>Import anyway</b>.</p>
-      <div class="seg" id="im-seg" style="margin-bottom:12px">
-        <button data-k="" class="on">All</button>
-        <button data-k="exact">Exact copies</button>
-        <button data-k="similar">Look-alikes</button>
-        <button data-k="repeat">Repeats in this folder</button>
+      <div class="im-right">
+        <div class="im-head">
+          <div>
+            <h2 class="serif" id="im-count"></h2>
+            <div class="sub small" id="im-from"></div>
+          </div>
+          <div class="im-tools">
+            <div class="seg" id="im-filter">
+              <button data-k="" class="on">All</button>
+              <button data-k="new">New</button>
+              <button data-k="dup">Duplicates</button>
+            </div>
+            <div class="seg icons" id="im-view">
+              <button data-v="grid" class="on" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button>
+              <button data-v="list" title="List"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <label class="selall"><input type="checkbox" id="im-all" checked> <span id="im-all-label">Select all</span></label>
+        <div id="im-grid" class="im-grid"></div>
+        <div class="more"><button class="ghost" id="im-more" hidden></button></div>
       </div>
-      <div id="im-similar"></div>
     </div>
-    <div id="im-new-wrap" hidden>
-      <h3 class="sec">New to your library <span class="muted small" id="im-new-n"></span></h3>
-      <div class="tiles small" id="im-new"></div>
+
+    <div class="im-review" id="im-review" hidden>
+      <div class="review-card">
+        <div class="big-check">✓</div>
+        <h1 class="serif" id="rv2-title"></h1>
+        <p class="sub" id="rv2-sub"></p>
+        <div class="tree" id="rv2-tree"></div>
+        <div class="callout soft" id="rv2-wait" hidden></div>
+        <div class="review-actions">
+          <button class="dark" id="rv2-prune">Prune these photos</button>
+          <button class="ghost" id="rv2-library">See them in Library</button>
+          <button class="ghost" id="rv2-preview" hidden>Open Drive Preview</button>
+          <button class="link" id="rv2-again">Import more</button>
+        </div>
+      </div>
     </div>
-    <div class="im-bar">
-      <button class="link" id="im-cancel">Cancel</button>
-      <button class="primary big" id="im-go"></button>
+
+    <div class="im-bottom" id="im-bottom" hidden>
+      <div class="src-card">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l4 4v14H7z"/><path d="M10 7v3M13 7v3M16 7v3"/></svg>
+        <div class="src-text"><b id="im-src-name"></b>
+          <div class="bar"><div id="im-src-bar"></div></div>
+          <span class="muted small" id="im-src-sub"></span></div>
+      </div>
+      <div class="spacer"></div>
+      <button class="ghost" id="im-cancel">Cancel</button>
+      <button class="dark big" id="im-go">Import as Renamed</button>
     </div>
   </section>
 
@@ -306,6 +378,8 @@
     <div id="org-list" class="changes"></div>
   </section>
 </main>
+</div>
+</div>
 
 <!-- Photo viewer -->
 <div id="viewer" class="viewer" hidden>
@@ -455,6 +529,7 @@
   </div>
 </div>
 <datalist id="tag-list"></datalist>
+<datalist id="pp-albums"></datalist>
 
 <div id="toast" class="toast" hidden></div>
 

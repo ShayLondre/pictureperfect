@@ -133,7 +133,9 @@ def import_pending():
 def import_commit():
     l = lib()
     b = request.json or {}
-    l.start_job("Adding new photos", l.commit_import, b.get("include", []), b.get("ratings"))
+    l.start_job("Importing your photos", l.commit_import, b.get("include", []), b.get("ratings"),
+                (b.get("event") or "").strip() or None, int(b.get("shift") or 0), b.get("album") or None,
+                bool(b.get("rename", True)), bool(b.get("delete_source", False)), b.get("names"))
     return jsonify({"ok": True})
 
 

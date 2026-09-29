@@ -17,15 +17,14 @@ The app is built for Apple silicon Macs (M1 and newer).
 
 **Choose your photo folder** the first time. It scans everything: dates, locations, previews. A big collection can take a while the first time; later scans only look at what's new.
 
-**Add photos…** — choose a folder (a card, a phone export, downloads). Before anything is copied or renamed, every photo is checked against your library:
+**Import** — the steps across the top show where you are: **1 Import → 2 Rename → 3 Organize → 4 Review**.
 
-- **Exact copies** of photos you already have,
-- **Look-alikes** — the same picture resized, re-saved, or sent through WhatsApp or email,
-- **Repeats** inside the new folder itself.
+1. **Import:** choose a memory card, phone export or any folder. Every photo is checked against your library first.
+2. **Rename:** every photo shows its old name and, in blue, its new name. On the left, type the **Event / Collection** (e.g. *Lake Como*), change the **Date** to fix a camera clock (every photo moves by the same amount), pick the **Filename format** (with or without the time), and see the **Destination** folders. Click any blue name to change it for just that photo. Photos already in your library are marked and left out — see them under **Duplicates** and tick any you want anyway. Options: rename and file as shown, add to an album, and move the originals to the Trash after importing.
+3. **Organize:** **Import as Renamed** copies, renames and files everything in one go, saving dates, places and names into the photos.
+4. **Review:** see where everything went, then **Prune these photos** if you like. Photos without a date wait in Drive Preview.
 
-Each one is shown next to the photo it matches. They're left out unless you click **Import anyway**. Nothing is copied until you press **Copy N photos to your drive**. If none of the photos are already in your library, it skips this step and copies straight away. The copies go into a `_Drive Preview` folder on your drive, still with their old names, and the Drive Preview tab opens so you can see what each will be renamed to.
-
-**Drive Preview** — opens by itself whenever new photos arrive (from **Add photos…**, or when a rescan finds new files on the drive). Each photo shows its new name before anything is renamed. You can change:
+**Drive Preview** — holds photos that still need something before they can be filed: photos with no date, photos you imported without renaming, or new files a rescan found on the drive. Each photo shows its new name before anything is renamed. You can change:
 
 - the **name** (location and event, e.g. *Bequia Regatta*)
 - the **date & time** — if the camera clock was wrong, select them all, choose **Date & time…**, and set the first photo to the right time; the rest shift by the same amount and stay in order

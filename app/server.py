@@ -136,7 +136,7 @@ def import_commit():
     l.start_job("Importing your photos", l.commit_import, b.get("include", []), b.get("ratings"),
                 (b.get("event") or "").strip() or None, int(b.get("shift") or 0), b.get("album") or None,
                 bool(b.get("rename", True)), bool(b.get("delete_source", False)), b.get("names"),
-                b.get("times"), b.get("tags"))
+                b.get("times"), b.get("tags"), b.get("places"), b.get("batch_place"))
     return jsonify({"ok": True})
 
 
@@ -152,6 +152,11 @@ def import_media(idx):
     if not path or not os.path.exists(path):
         abort(404)
     return send_file(path, mimetype=mime, conditional=True)
+
+
+@app.route("/api/names-in-use", methods=["POST"])
+def names_in_use():
+    return jsonify(lib().names_in_use((request.json or {}).get("targets", [])))
 
 
 @app.route("/import-thumb/<int:idx>")

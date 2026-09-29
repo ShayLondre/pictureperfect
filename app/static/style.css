@@ -651,3 +651,8 @@ main { padding: 28px 34px; }
   .im-table .th, .im-table .tr { grid-template-columns: 24px 64px minmax(0, .7fr) 12px minmax(220px, 2.6fr) 92px; }
   .im-table .c-size { display: none !important; }
 }
+.fname .num { color: var(--accent); font-weight: 600; padding-right: 1px; }
+.placerow { display: flex; gap: 8px; align-items: center; }
+.placepick { flex: 1; text-align: left; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.im-table .c-loc.set { color: var(--accent); }
+.im-table .c-loc .link { padding: 0; font-size: 13px; }

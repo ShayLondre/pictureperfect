@@ -1795,6 +1795,29 @@ class Library:
         return {"source": p["source"], "items": out, "settings": self.settings(), "albums": groups,
                 "library": os.path.basename(self.root.rstrip(os.sep)) or self.root}
 
+    def names_in_use(self, targets):
+        """For each wanted path, which endings are already taken on the drive:
+        1 = the plain name, 2 = "… 2", and so on."""
+        out = {}
+        for t in targets[:5000]:
+            stem, ext = os.path.splitext(t)
+            low_stem, low_ext = stem.lower(), ext.lower()
+            used = set()
+            for r in self.q("SELECT path FROM files WHERE status='active' AND lower(path) LIKE ? ESCAPE '\\'",
+                            (low_stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",)):
+                p = r["path"].lower()
+                if not p.endswith(low_ext):
+                    continue
+                rest = p[len(low_stem):len(p) - len(low_ext)]
+                if rest == "":
+                    used.add(1)
+                elif rest.startswith(" ") and rest[1:].isdigit():
+                    used.add(int(rest[1:]))
+            if os.path.exists(self.full(t)):
+                used.add(1)
+            out[t] = sorted(used)
+        return out
+
     def import_thumb(self, idx):
         return os.path.join(self.data, "import-check", "%d.jpg" % int(idx))
 
@@ -1826,7 +1849,8 @@ class Library:
         return big, "image/jpeg"
 
     def commit_import(self, job, include, ratings=None, event=None, shift=0, album=None,
-                      rename=True, delete_source=False, names=None, times=None, tags=None):
+                      rename=True, delete_source=False, names=None, times=None, tags=None,
+                      places=None, batch_place=None):
         p = getattr(self, "pending_import", None)
         if not p:
             raise ValueError("Please check the folder again.")
@@ -1842,7 +1866,8 @@ class Library:
         names = {int(k): v for k, v in (names or {}).items()}
         times = {int(k): v for k, v in (times or {}).items() if v}
         tags = {int(k): v for k, v in (tags or {}).items() if v}
-        named_paths, timed_paths, tagged_paths = {}, {}, {}
+        places = {int(k): v for k, v in (places or {}).items() if v}
+        named_paths, timed_paths, tagged_paths, placed_paths = {}, {}, {}, {}
         job.step("Copying photos to your drive", len(chosen))
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H%M")
         dest_dir = os.path.join(self.root, INBOX, stamp)
@@ -1860,6 +1885,8 @@ class Library:
                     timed_paths[rel] = times[it["i"]]
                 if it["i"] in tags:
                     tagged_paths[rel] = tags[it["i"]]
+                if it["i"] in places:
+                    placed_paths[rel] = places[it["i"]]
                 if it["i"] in ratings:
                     rated[os.path.relpath(dest, self.root)] = ratings[it["i"]]
                 side = find_sidecar(it["src"])
@@ -1900,6 +1927,16 @@ class Library:
             fid = one(path)
             if fid:
                 self.edit([fid], add_tags=list(tg))
+        # a place for the batch fills in photos without GPS; a place you set for one photo always applies
+        if batch_place and ids:
+            bare = [r["id"] for r in self.q("SELECT id FROM files WHERE batch=? AND pair_of IS NULL AND lat IS NULL", (batch,))]
+            if bare:
+                self.set_location(bare, batch_place["lat"], batch_place["lon"],
+                                  batch_place.get("label"), batch_place.get("name"))
+        for path, pl in placed_paths.items():
+            fid = one(path)
+            if fid:
+                self.set_location([fid], pl["lat"], pl["lon"], pl.get("label"), pl.get("name"))
         waiting = self.q("SELECT COUNT(*) AS n FROM files WHERE batch=? AND pair_of IS NULL AND " + NEEDS_SQL, (batch,))[0]["n"]
         filed = {}
         if ids and rename:
@@ -2410,11 +2447,12 @@ class Library:
         for g in self.dup_groups():
             for f in g["files"]:
                 dup_ids.add(f["id"])
-        return {"items": [self._review_public(r, s, dup_ids) for r in rows], "tags": self.all_tags()}
+        final = {c["id"]: c["new"] for c in self.plan()}
+        return {"items": [self._review_public(r, s, dup_ids, final) for r in rows], "tags": self.all_tags()}
 
-    def _review_public(self, r, s, dup_ids=()):
+    def _review_public(self, r, s, dup_ids=(), final=None):
         out = self.public(r)
-        out["new"] = self.target_for(r, s)
+        out["new"] = (final or {}).get(r["id"]) or self.target_for(r, s)
         out["name_part"] = r["title"] if r["title"] is not None else extract_name(os.path.basename(r["path"]))
         out["default_name"] = short_place(r.get("city") or r["place"]) if r["place"] else ""
         out["dupe"] = r["id"] in dup_ids
@@ -2479,7 +2517,8 @@ class Library:
         self.invalidate()
         s = self.settings()
         fresh = self.q("SELECT * FROM files WHERE id IN (%s) ORDER BY taken, path" % ",".join("?" * len(ids)), ids)
-        return {"items": [self._review_public(r, s) for r in fresh]}
+        final = {c["id"]: c["new"] for c in self.plan()}
+        return {"items": [self._review_public(r, s, (), final) for r in fresh]}
 
     def groups(self):
         """Existing groups: photos sharing a name, split where there's a gap of more than two weeks."""

@@ -25,7 +25,7 @@
     <button data-tab="inbox"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/><path d="m14 16 2 2 4-4"/></svg><span>Drive Preview</span><span class="badge" id="b-inbox"></span></button>
     <button data-tab="dupes"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span>Duplicates</span><span class="badge" id="b-dupes"></span></button>
     <button data-tab="pick"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 17M8 15.5 20 7"/></svg><span>Prune</span></button>
-    <button data-tab="organize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Organize</span></button>
+    <button data-tab="organize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Tidy Up</span></button>
   </nav>
   <div class="albums" id="albums" hidden>
     <div class="albums-head">Albums</div>
@@ -65,7 +65,7 @@
   <section id="v-browse" class="view" hidden>
     <div class="callout" id="browse-unorg" hidden>
       <div id="browse-unorg-text"></div>
-      <button class="primary" id="browse-unorg-go">See the new names</button>
+      <button class="primary" id="browse-unorg-go">Open Tidy Up</button>
     </div>
     <div class="filters">
       <label class="field grow"><span>Place</span>
@@ -348,8 +348,8 @@
   <section id="v-organize" class="view narrow" hidden>
     <div class="head">
       <div>
-        <h2>Organize</h2>
-        <p class="muted">Renames and files your photos. Nothing changes until you press Apply.</p>
+        <h2>Tidy Up</h2>
+        <p class="muted">For photos that were <b>already on your drive</b> before you used Picture Perfect. It gives them the same style of names and folders as your imports. Below is what each photo would become — <b>nothing changes until you press Apply changes</b>, and <b>Undo</b> puts everything back. New photos don't need this: Import already names and files them.</p>
       </div>
     </div>
     <div class="settings">

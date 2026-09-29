@@ -471,7 +471,14 @@ def places():
 
 @app.route("/api/organize")
 def organize_plan():
-    return jsonify(lib().plan_summary())
+    return jsonify(lib().plan_summary(offset=int(request.args.get("offset", 0))))
+
+
+@app.route("/api/organize/group-ids")
+def organize_group_ids():
+    folder = request.args.get("folder", "")
+    return jsonify([c["id"] for c in lib().plan() if not c["lead"] and c["old"] != c["new"]
+                    and os.path.dirname(c["new"]) == folder])
 
 
 @app.route("/api/organize/settings", methods=["POST"])

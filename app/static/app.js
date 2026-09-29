@@ -888,10 +888,10 @@ async function checkUnorganized() {
   try {
     const r = await api("/api/unorganized");
     $("#browse-unorg").hidden = !r.count;
-    $("#browse-unorg-text").innerHTML = `<b>${plural(r.count, "photo")} still ${r.count === 1 ? "has its" : "have their"} old name${r.count === 1 ? "" : "s"}.</b> Nothing gets renamed or moved until you say so — see what each will be renamed to, then press Apply.`;
+    $("#browse-unorg-text").innerHTML = `<b>${plural(r.count, "photo")} on your drive still ${r.count === 1 ? "has its" : "have their"} old name${r.count === 1 ? "" : "s"}.</b> To give ${r.count === 1 ? "it" : "them"} the same style as your imports, go to Tidy Up — nothing changes until you press Apply.`;
   } catch (e) { /* ignore */ }
 }
-$("#browse-unorg-go").onclick = () => showTab("organize");
+$("#browse-unorg-go").onclick = () => showTab("organize");  // Tidy Up
 
 async function loadBrowse(reset, soft) {
   if (reset) checkUnorganized();
@@ -1330,11 +1330,12 @@ $("#pk-save").onclick = async () => {
 };
 
 /* ------------------------------------------------------------------ organize */
+const ORG = { offset: 0, groups: [] };
 async function loadOrganize(data) {
   let r = data;
   if (!r) {
     $("#org-stats").innerHTML = `<p class="muted">Working out the changes…</p>`;
-    try { r = await api("/api/organize"); } catch (e) { return fail(e); }
+    try { r = await api("/api/organize?offset=" + ORG.offset); } catch (e) { return fail(e); }
   }
   const s = r.settings;
   $$("#set-folders button").forEach(b => b.classList.toggle("on", b.dataset.v === s.folders));
@@ -1365,18 +1366,61 @@ async function loadOrganize(data) {
   $("#btn-apply").disabled = !r.total;
   $("#btn-undo").hidden = !r.can_undo;
 
-  $("#org-list").innerHTML = r.total ? r.sample.map(c => {
-    const flags = [c.gps ? "+ location" : "", c.date ? "+ date" : "", c.tags ? "+ tags" : ""].filter(Boolean).join(" ");
-    return `<div class="change">
-      <img loading="lazy" src="/thumb/${c.id}" alt="">
-      <div>
-        ${c.old !== c.new ? `<div class="old">${esc(fileOf(c.old))}</div>` : ""}
-        <div class="new">${esc(fileOf(c.new))}<span class="muted small"> · 📁 ${esc(folderOf(c.new) || "top of drive")}</span>${flags ? `<span class="flags">${flags}</span>` : ""}${c.guessed ? `<span class="flags warnf">date guessed</span>` : ""}</div>
+  ORG.offset = r.group_offset || 0;
+  ORG.groups = r.groups || [];
+  const pages = r.group_total > 40;
+  $("#org-list").innerHTML = r.renames ? `
+    <p class="hint org-hint">Grouped by the folder each photo goes into. Change a <b>group name</b> to rename every photo in it, or change one photo's name on its own. Leave a name empty to use the place instead.</p>` +
+    ORG.groups.map((g, gi) => `
+    <div class="ogroup" data-g="${gi}">
+      <div class="ogroup-head">
+        <div class="ofolder">📁 ${esc(g.folder.split("/").join(" › ") || "top of drive")}</div>
+        <label class="oname">Name for ${g.count === 1 ? "this photo" : `all ${n(g.count)} photos`}
+          <input data-gname value="${esc(g.name)}" placeholder="Event or place" spellcheck="false"></label>
       </div>
-    </div>`;
-  }).join("") + (r.total > r.sample.length ? `<div class="tail">…and ${n(r.total - r.sample.length)} more</div>` : "")
+      ${g.items.map(c => {
+        const flags = [c.gps ? "+ location" : "", c.date ? "+ date" : "", c.tags ? "+ tags" : ""].filter(Boolean).join(" ");
+        return `<div class="orow" data-id="${c.id}">
+          <img loading="lazy" src="/thumb/${c.id}" alt="">
+          <div class="oold">${esc(fileOf(c.old))}${c.raw.length ? ` <span class="tagx">+ ${esc(c.raw.join(", "))}</span>` : ""}</div>
+          <div class="c-arrow">→</div>
+          <div class="fname ${c.own ? "mine" : ""}"><span>${esc(c.prefix)}</span><input data-name value="${esc(c.name)}" placeholder="name" spellcheck="false">${c.suffix ? `<span class="num">${esc(c.suffix)}</span>` : ""}<span>${esc(c.ext)}</span></div>
+          ${flags ? `<span class="flags">${flags}</span>` : ""}
+        </div>`;
+      }).join("")}
+      ${g.count > g.items.length ? `<div class="tail">…and ${n(g.count - g.items.length)} more in this folder — the group name changes them all</div>` : ""}
+    </div>`).join("") +
+    (pages ? `<div class="org-pages">
+      <button class="ghost" id="org-prev" ${ORG.offset ? "" : "disabled"}>‹ Previous folders</button>
+      <span class="muted small">Folders ${n(ORG.offset + 1)}–${n(Math.min(ORG.offset + 40, r.group_total))} of ${n(r.group_total)}</span>
+      <button class="ghost" id="org-next" ${ORG.offset + 40 < r.group_total ? "" : "disabled"}>Next folders ›</button></div>` : "")
     : `<div class="empty"><div class="big-check">✓</div>Everything is already organized.</div>`;
+  const pv = $("#org-prev"), nx = $("#org-next");
+  if (pv) pv.onclick = () => { ORG.offset = Math.max(0, ORG.offset - 40); loadOrganize(); window.scrollTo(0, 0); };
+  if (nx) nx.onclick = () => { ORG.offset += 40; loadOrganize(); window.scrollTo(0, 0); };
 }
+
+async function orgRename(ids, title) {
+  const y = window.scrollY;
+  try {
+    await api("/api/edit", { ids, title: title.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() });
+    await loadOrganize();
+    window.scrollTo(0, y);
+    loadAlbums();
+  } catch (e) { fail(e); }
+}
+$("#org-list").addEventListener("change", (e) => {
+  const grp = e.target.closest(".ogroup"); if (!grp) return;
+  const g = ORG.groups[+grp.dataset.g];
+  if (e.target.matches("[data-gname]")) {
+    // everything in this folder — including photos beyond the first 60 shown
+    return api(`/api/organize/group-ids?folder=${encodeURIComponent(g.folder)}`).then(ids => orgRename(ids, e.target.value)).catch(fail);
+  }
+  if (e.target.matches("[data-name]")) orgRename([+e.target.closest(".orow").dataset.id], e.target.value);
+});
+$("#org-list").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches("input")) e.target.blur();
+});
 
 async function saveSetting(key, value) {
   try { loadOrganize(await api("/api/organize/settings", { [key]: value })); } catch (e) { fail(e); }

@@ -49,15 +49,15 @@ Do it one photo at a time, or tick several and use the buttons at the top.
 
 **Locations** — photos with no location, grouped by day. Where you took another photo nearby in time, it suggests that place. Otherwise, search for a place or click the map.
 
-**Organize** — shows exactly what will change before anything happens. Press **Apply** to rename, file into folders, and save locations and dates into the photos themselves. **Undo** puts names and folders back.
+**Tidy Up** — for photos that were already on your drive before you used Picture Perfect (new photos are named and filed by Import). It shows exactly what each existing photo would be renamed to and where it would go, before anything happens. Old names are cleaned up: a short date at the start (*250515 …*) and the camera's number at the end (*JAPN2382*, *IMG_4321*, *DSC_0412*) are dropped, keeping just the event. The list is grouped by the folder each photo goes into: change a group's **name** to rename every photo in it, or change one photo's name in its own box (leave it empty to use the place instead). Nothing is renamed until you press **Apply changes**, and **Undo** puts it all back. Press **Apply** to rename, file into folders, and save locations and dates into the photos themselves. **Undo** puts names and folders back.
 
 Names look like:
 
     📁 2025.07 › 📁 2025.07 Spain › 2025.07.14 1030 Spain.jpg
 
-One folder per month, and inside it one folder per trip or event (photos that share a name). A trip that runs into the next month stays together in the month it began. Photos with no name sit directly in the month folder. Other layouts (Year › Month, Year, No folders) and time-in-name can be switched in Organize. Names you've already written are kept. Photos without a name get their place, e.g. `2025.12.25 1432 Gustavia.jpg`.
+One folder per month, and inside it one folder per trip or event (photos that share a name). A trip that runs into the next month stays together in the month it began. Photos with no name sit directly in the month folder. Other layouts (Year › Month, Year, No folders) and time-in-name can be switched in Tidy Up. Names you've already written are kept. Photos without a name get their place, e.g. `2025.12.25 1432 Gustavia.jpg`.
 
-**Year highlights** — 📁 *2025 Highlights* sits at the top of each year and holds a copy of every ★★★★★ photo from that year (or ★★★★ and up — choose in Organize). It updates itself whenever you Save, Organize or Prune: new 5-star photos are added, ones you lower or delete are taken out. The originals never move. On an APFS (Mac-format) drive the copies share the original's space and cost almost nothing; on exFAT they take real space. Highlight copies are never counted as duplicates.
+**Year highlights** — 📁 *2025 Highlights* sits at the top of each year and holds a copy of every ★★★★★ photo from that year (or ★★★★ and up — choose in Tidy Up). It updates itself whenever you import, Tidy Up or Prune: new 5-star photos are added, ones you lower or delete are taken out. The originals never move. On an APFS (Mac-format) drive the copies share the original's space and cost almost nothing; on exFAT they take real space. Highlight copies are never counted as duplicates.
 
 **RAW + JPEG pairs** — when your camera saves the same shot twice (e.g. `DSC_0412.JPG` and `DSC_0412.NEF`), the app treats them as one photo: shown once with a **RAW+JPEG** badge, never flagged as duplicates, and always kept together — same new name with their own endings (`2025.07.14 1030 Spain.jpg` / `.nef`), same folder, and the same date, place, tags, stars and people saved into both. Delete or set one aside and the other goes with it.
 
@@ -68,7 +68,7 @@ One folder per month, and inside it one folder per trip or event (photos that sh
 - A photo's exact GPS position is never replaced; only photos without one get a location, and only when you choose it. The exact place (e.g. *Long Island City*) is kept in the photo's details and search, while folder and file names use the city (*New York City*) unless you've named the photos yourself.
 - Everything matches: the date and time in the name, the date saved inside the photo, and the Created / Modified dates Finder shows. Places and tags are saved inside the photo too, so Finder search and Apple Photos can see them.
 - Undo covers names and folders. Locations and dates saved into photos stay (your backup drive has the originals).
-- Nothing gets a made-up date. A photo with no date (or no time) waits in Drive Preview, marked **Date needed**, until you add one — or you can choose "use file date" or "date only". Organize shows how many are waiting and takes you to them.
+- Nothing gets a made-up date. A photo with no date (or no time) waits in Drive Preview, marked **Date needed**, until you add one — or you can choose "use file date" or "date only". Tidy Up shows how many are waiting and takes you to them.
 - Works with JPG, HEIC, PNG, TIFF, RAW, and videos (MOV, MP4 and more).
 
 

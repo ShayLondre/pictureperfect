@@ -117,16 +117,38 @@ JUNK_RE = re.compile(
 BAD_CHARS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
+CAMERA_NO_RE = re.compile(r"(?:(?<=\s)|(?<=^)|(?<=[_\-]))(?:_?[A-Z]{2,5}_?|(?:img|dsc[nf]?|pxl|vid|mvimg|gopr|dji)_?)\d{3,6}(?=$|[\s_\-.(])",
+                          0)
+CAMERA_NO_CI_RE = re.compile(r"(?:(?<=\s)|(?<=^)|(?<=[_\-]))(?:img|dsc[nf]?|pxl|vid|mvimg|gopr|dji|_mg)_?\d{3,6}(?=$|[\s_\-.(])", re.I)
+
+
+OWN_NAME_RE = re.compile(r"^(?:19|20)\d{2}\.\d{2}\.\d{2}(?: \d{4})? .+ \d{1,2}$")
+
+
 def extract_name(filename):
     """Pull the human part out of a filename: '20190312 Tobago Cays.jpg' -> 'Tobago Cays'."""
     stem = os.path.splitext(filename)[0]
+    if OWN_NAME_RE.match(stem):
+        stem = re.sub(r" \d{1,2}$", "", stem)   # our own " 2", " 3" for photos taken in the same minute
     _, _, span = date_from_filename(stem)
     if span:
         stem = stem[:span[0]] + " " + stem[span[1]:]
+    else:
+        # a short date at the start, like "250515 Miami" (YYMMDD)
+        m = re.match(r"^\s*(\d{2})(\d{2})(\d{2})(?=[\s_\-.]|$)", stem)
+        if m:
+            try:
+                dt.date(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                stem = stem[m.end():]
+            except ValueError:
+                pass
     stem = UUID_RE.sub(" ", stem)
     stem = re.sub(r"\bat \d{1,2}[.:]\d{2}(?:[.:]\d{2})?(?:\s?[AP]M)?", " ", stem, flags=re.I)   # Mac screenshots
+    # the camera's own file number, e.g. JAPN2382, IMG_4321, DSC_0412, _MG_1234, DSCF0001
+    stem = CAMERA_NO_RE.sub(" ", stem)
+    stem = CAMERA_NO_CI_RE.sub(" ", stem)
     stem = NOISE_TAIL_RE.sub("", stem.strip())
-    stem = BAD_CHARS_RE.sub(" ", stem)
+    stem = BAD_CHARS_RE.sub(" ", stem).replace("_", " ")
     stem = re.sub(r"\s+", " ", stem).strip(" _-.,")
     if not stem or JUNK_RE.match(stem):
         return ""
@@ -2720,7 +2742,7 @@ class Library:
         return changes
 
     def _change(self, r, new):
-        return {"id": r["id"], "old": r["path"], "new": new, "kind": r["kind"],
+        return {"id": r["id"], "old": r["path"], "new": new, "kind": r["kind"], "lead": r["pair_of"],
                 "gps": bool(r["gps_pending"]), "date": bool(r["date_pending"]),
                 "tags": bool(r["tags_pending"]), "filedates": not r["filedates"],
                 "rating": bool(r["rating_pending"]),
@@ -2735,9 +2757,56 @@ class Library:
                 n += 1
         return n
 
-    def plan_summary(self, limit=300):
+    def plan_groups(self, changes, offset=0, limit=40):
+        """The planned renames, grouped by destination folder, with the editable name part
+        of each photo pulled out so it can be changed."""
+        rows = {r["id"]: r for r in self.q("SELECT * FROM files WHERE status='active'")}
+        raws = defaultdict(list)
+        for c in changes:
+            if c["lead"]:
+                raws[c["lead"]].append(c)
+        groups, order = {}, []
+        for c in changes:
+            if c["lead"] or c["old"] == c["new"]:
+                continue
+            r = rows.get(c["id"])
+            if not r:
+                continue
+            folder = os.path.dirname(c["new"])
+            stem, ext = os.path.splitext(os.path.basename(c["new"]))
+            m = re.match(r"^((?:19|20)\d{2}\.\d{2}\.\d{2}(?: \d{4})?)(?: |$)", stem)
+            prefix = (m.group(1) + " ") if m else ""
+            rest = stem[m.end():] if m else stem
+            name = self.name_part(r) or ""
+            if rest == name:
+                suffix = ""
+            elif name and rest.startswith(name) and re.match(r"^ \d+$", rest[len(name):]):
+                suffix = rest[len(name):]
+            else:
+                name, suffix = rest, ""
+            item = {"id": c["id"], "old": c["old"], "prefix": prefix, "name": name, "suffix": suffix, "ext": ext,
+                    "thumb": c["thumb"], "gps": c["gps"], "date": c["date"], "tags": c["tags"],
+                    "own": r["title"] is not None,
+                    "raw": [os.path.splitext(x["new"])[1].lstrip(".").upper() for x in raws.get(c["id"], [])]}
+            if folder not in groups:
+                groups[folder] = {"folder": folder, "items": []}
+                order.append(folder)
+            groups[folder]["items"].append(item)
+        out = []
+        for f in order[offset:offset + limit]:
+            g = groups[f]
+            names = Counter(i["name"] for i in g["items"])
+            g["name"] = names.most_common(1)[0][0] if names else ""
+            g["count"] = len(g["items"])
+            g["items"] = g["items"][:60]
+            out.append(g)
+        return out, len(order)
+
+    def plan_summary(self, limit=300, offset=0):
         changes = self.plan()
+        groups, ngroups = self.plan_groups(changes, offset)
         return {
+            "groups": groups, "group_total": ngroups, "group_offset": offset,
             "settings": self.settings(),
             "renames": sum(1 for c in changes if c["old"] != c["new"]),
             "gps": sum(1 for c in changes if c["gps"]),

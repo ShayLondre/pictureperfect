@@ -1334,43 +1334,55 @@ const ORG = { offset: 0, groups: [] };
 async function loadOrganize(data) {
   let r = data;
   if (!r) {
-    $("#org-stats").innerHTML = `<p class="muted">Working out the changes…</p>`;
+    $("#org-stats").innerHTML = `<p class="hint">Working out the changes…</p>`;
     try { r = await api("/api/organize?offset=" + ORG.offset); } catch (e) { return fail(e); }
   }
   const s = r.settings;
-  $$("#set-folders button").forEach(b => b.classList.toggle("on", b.dataset.v === s.folders));
-  $$("#set-time button").forEach(b => b.classList.toggle("on", b.dataset.v === s.time));
-  $$("#set-highlights button").forEach(b => b.classList.toggle("on", b.dataset.v === s.highlights));
+  $("#org-folders").value = s.folders || "month_group";
+  $("#org-time").value = s.time === "0" ? "0" : "1";
+  $("#org-hl").value = s.highlights || "5";
+  $("#org-folders-note").textContent = {
+    month_group: "One folder per month, and inside it a folder for each trip or event. Photos without a name go straight in the month.",
+    year_month: "A folder per year with a folder per month inside. No trip folders.",
+    year: "One folder per year, with every photo from that year inside.",
+    none: "No folders — every photo sits together, sorted by its name.",
+  }[s.folders || "month_group"];
+  const f = { month_group: ["2025.07", "2025.07 Spain"], year_month: ["2025", "2025-07"], year: ["2025"], none: [] }[s.folders || "month_group"];
+  const fold = `<svg viewBox="0 0 24 24" class="fold"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+  $("#org-example").innerHTML = f.map(x => `<div class="t2">${fold}${esc(x)}</div>`).join("") +
+    `<div class="t2 file" style="margin-left:${f.length * 16}px">2025.07.14${s.time === "1" ? " 1030" : ""} Spain.jpg</div>`;
+  $$("#org-example .t2").forEach((el, i) => { if (!el.classList.contains("file")) el.style.marginLeft = (i * 16) + "px"; });
   $("#org-hl-note").innerHTML = s.highlights === "off"
-    ? `<span class="muted small">No highlights folders.</span>`
-    : `<span class="muted small">📁 <b>2025 Highlights</b> holds a copy of every ${s.highlights === "5" ? "5-star" : "4- and 5-star"} photo from 2025 — ${plural(r.highlights, "photo")} across all years right now. Originals stay in their folders.</span>`;
+    ? "No Highlights folders are made."
+    : `📁 <b>2025 Highlights</b> sits next to the month folders and holds a copy of every ${s.highlights === "5" ? "5-star" : "4- and 5-star"} photo from that year, so a year's best is in one place. The originals stay where they are. ${plural(r.highlights, "photo")} qualify right now.`;
   $("#btn-hl").hidden = s.highlights === "off";
-  const folder = { month_group: "2025.07 › 2025.07 Spain", year_month: "2025 › 2025-07", year: "2025" }[s.folders] || "";
-  $("#org-example").textContent = (folder ? `📁 ${folder} › ` : "") + `2025.07.14${s.time === "1" ? " 1030" : ""} Spain.jpg`;
 
   const dg = (S.state.stats || {}).dup_groups || 0;
   $("#org-dupes-note").hidden = !dg;
-  $("#org-dupes-note").textContent = dg ? `You still have ${plural(dg, "duplicate group")} to review. It's fine to organize now, but clearing them first means fewer files to rename.` : "";
+  $("#org-dupes-note").innerHTML = dg ? `You have ${plural(dg, "duplicate group")} to review. It's fine to tidy up first, but clearing duplicates first means fewer files to rename. <button class="link" id="org-go-dupes" style="padding:0">Open Duplicates ›</button>` : "";
+  const gd = $("#org-go-dupes"); if (gd) gd.onclick = () => showTab("dupes");
 
-  const stat = (num, label) => `<div class="stat"><div class="n">${n(num)}</div><div class="l">${label}</div></div>`;
+  const line = (num, label) => `<div class="srow"><span>${label}</span><b>${n(num)}</b></div>`;
   $("#org-stats").innerHTML =
-    stat(r.renames, "files to rename or move") +
-    stat(r.gps, "locations to save into photos") +
-    stat(r.dates, "dates to save into photos") +
-    (r.tags ? stat(r.tags, "photos with new tags") : "") +
-    (r.needs_date ? `<div class="stat"><div class="n" style="color:var(--warn)">${n(r.needs_date)}</div>
-       <div class="l">need a date or time — they wait until you add one</div>
-       <button class="link" style="padding-left:0" id="org-needs">Add dates &amp; times ›</button></div>` : "");
+    line(r.renames, "Photos to rename or move") +
+    (r.gps ? line(r.gps, "Locations to save into photos") : "") +
+    (r.dates ? line(r.dates, "Dates to save into photos") : "") +
+    (r.tags ? line(r.tags, "Photos with new tags") : "") +
+    (r.needs_date ? `<div class="srow warnrow"><span>Waiting for a date or time</span><b>${n(r.needs_date)}</b></div>
+       <button class="link" style="padding:0;font-size:13px" id="org-needs">Add dates &amp; times ›</button>` : "") +
+    (!r.renames && !r.gps && !r.dates && !r.tags ? `<div class="hint">Nothing to change — your drive is tidy.</div>` : "");
   const nb = $("#org-needs");
   if (nb) nb.onclick = () => { R.mode = "needs"; showTab("inbox", true); };
+  $("#org-count").textContent = r.renames ? `${plural(r.renames, "photo")} to tidy up` : "All tidy";
   $("#btn-apply").disabled = !r.total;
+  $("#btn-apply").textContent = r.total ? `Apply changes (${n(r.renames || r.total)})` : "Apply changes";
   $("#btn-undo").hidden = !r.can_undo;
 
   ORG.offset = r.group_offset || 0;
   ORG.groups = r.groups || [];
   const pages = r.group_total > 40;
   $("#org-list").innerHTML = r.renames ? `
-    <p class="hint org-hint">Grouped by the folder each photo goes into. Change a <b>group name</b> to rename every photo in it, or change one photo's name on its own. Leave a name empty to use the place instead.</p>` +
+    <p class="hint org-hint">Leave a name empty to use the place instead.</p>` +
     ORG.groups.map((g, gi) => `
     <div class="ogroup" data-g="${gi}">
       <div class="ogroup-head">
@@ -1394,7 +1406,7 @@ async function loadOrganize(data) {
       <button class="ghost" id="org-prev" ${ORG.offset ? "" : "disabled"}>‹ Previous folders</button>
       <span class="muted small">Folders ${n(ORG.offset + 1)}–${n(Math.min(ORG.offset + 40, r.group_total))} of ${n(r.group_total)}</span>
       <button class="ghost" id="org-next" ${ORG.offset + 40 < r.group_total ? "" : "disabled"}>Next folders ›</button></div>` : "")
-    : `<div class="empty"><div class="big-check">✓</div>Everything is already organized.</div>`;
+    : `<div class="empty"><div class="big-check">✓</div>Everything on your drive already has the Picture Perfect names and folders.</div>`;
   const pv = $("#org-prev"), nx = $("#org-next");
   if (pv) pv.onclick = () => { ORG.offset = Math.max(0, ORG.offset - 40); loadOrganize(); window.scrollTo(0, 0); };
   if (nx) nx.onclick = () => { ORG.offset += 40; loadOrganize(); window.scrollTo(0, 0); };
@@ -1425,9 +1437,9 @@ $("#org-list").addEventListener("keydown", (e) => {
 async function saveSetting(key, value) {
   try { loadOrganize(await api("/api/organize/settings", { [key]: value })); } catch (e) { fail(e); }
 }
-$("#set-folders").onclick = (e) => { const b = e.target.closest("button"); if (b) saveSetting("folders", b.dataset.v); };
-$("#set-time").onclick = (e) => { const b = e.target.closest("button"); if (b) saveSetting("time", b.dataset.v); };
-$("#set-highlights").onclick = (e) => { const b = e.target.closest("button"); if (b) saveSetting("highlights", b.dataset.v); };
+$("#org-folders").onchange = (e) => saveSetting("folders", e.target.value);
+$("#org-time").onchange = (e) => saveSetting("time", e.target.value);
+$("#org-hl").onchange = (e) => saveSetting("highlights", e.target.value);
 $("#btn-hl").onclick = () => api("/api/highlights", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
 $("#btn-apply").onclick = () => {
   if (!confirm("Rename and move your photos now? You can undo the renaming afterwards.")) return;

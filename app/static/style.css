@@ -673,3 +673,21 @@ main { padding: 28px 34px; }
 .ogroup .tail { padding: 10px 16px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); }
 .org-pages { display: flex; justify-content: center; align-items: center; gap: 14px; margin: 18px 0; }
 #org-list { background: none; box-shadow: none; }
+
+/* Tidy Up in the Import style */
+#v-organize .im-left h1 { margin-top: 4px; }
+.example-path { display: flex; flex-direction: column; gap: 4px; font-size: 13px; background: var(--bg); border-radius: 8px; padding: 10px 12px; }
+.example-path .t2 { display: flex; align-items: center; gap: 6px; }
+.example-path .fold { width: 16px; height: 16px; fill: #5aa3f0; }
+.example-path .file { color: var(--accent); }
+.org-stats { display: flex; flex-direction: column; gap: 6px; }
+.srow { display: flex; justify-content: space-between; font-size: 14px; }
+.srow b { font-weight: 600; }
+.warnrow { color: var(--warn); }
+.callout.small { font-size: 13px; margin-top: 14px; padding: 12px 14px; display: block; }
+.bottom-note { display: flex; flex-direction: column; gap: 2px; }
+#v-organize .ogroup-head { background: var(--panel); border-bottom: 1px solid var(--line); }
+#v-organize .ofolder { font-weight: 500; font-size: 15px; }
+#v-organize .orow { grid-template-columns: 56px minmax(110px, 1fr) 16px minmax(240px, 2.2fr) auto; }
+#v-organize .orow img { width: 56px; height: 42px; }
+#v-organize .oold { text-decoration: none; }

@@ -112,9 +112,11 @@
 
     <div class="im-main" id="im-main" hidden>
       <div class="im-left">
-        <h1 class="serif">Import Photos</h1>
-        <p class="sub">Rename before importing</p>
+        <h1 class="serif">Organize &amp; Rename</h1>
+        <p class="sub small">Review and edit filenames, dates and destination before importing.</p>
+        <div class="detail" id="im-detail"></div>
         <div class="panel">
+          <div class="panel-head">Applies to All Selected Photos</div>
           <label class="fl">Event / Collection<input id="im-event" placeholder="e.g. Lake Como" autocomplete="off" list="pp-albums"></label>
           <label class="fl">Date<input id="im-date" type="date"></label>
           <div class="hint" id="im-date-note"></div>
@@ -124,18 +126,13 @@
               <option value="0">YYYY.MM.DD Event</option>
             </select></label>
           <div class="hint">Preview: <span id="im-preview"></span></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head">Destination</div>
-          <div class="tree" id="im-tree"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head">Import Options</div>
-          <label class="opt"><input type="checkbox" id="op-rename" checked> Rename and file as shown</label>
-          <label class="opt"><input type="checkbox" id="op-dupes" checked> Leave out photos I already have</label>
-          <label class="opt"><input type="checkbox" id="op-album"> Add to album: <select id="op-album-sel"></select></label>
-          <label class="opt"><input type="checkbox" id="op-delete"> Move originals to the Trash after importing</label>
-          <p class="hint" id="op-delete-note" hidden>Only after each photo is safely copied. You can still Put Back from the Trash.</p>
+          <button class="ghost small-btn" id="im-adv-btn">Advanced Options…</button>
+          <div id="im-adv" hidden>
+            <label class="opt"><input type="checkbox" id="op-rename" checked> Rename and file as shown</label>
+            <label class="opt"><input type="checkbox" id="op-dupes" checked> Leave out photos I already have</label>
+            <label class="opt"><input type="checkbox" id="op-delete"> Move originals to the Trash after importing</label>
+            <p class="hint" id="op-delete-note" hidden>Only after each photo is safely copied. You can still Put Back from the Trash.</p>
+          </div>
         </div>
       </div>
       <div class="im-right">
@@ -150,14 +147,18 @@
               <button data-k="new">New</button>
               <button data-k="dup">Duplicates</button>
             </div>
+            <div class="searchbox" id="im-search-box">
+              <button class="icon-btn" id="im-search-btn" title="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></button>
+              <input id="im-search" placeholder="Search names" hidden autocomplete="off">
+            </div>
             <div class="seg icons" id="im-view">
-              <button data-v="grid" class="on" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button>
-              <button data-v="list" title="List"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1"/></svg></button>
+              <button data-v="grid" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button>
+              <button data-v="list" class="on" title="List"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1"/></svg></button>
             </div>
           </div>
         </div>
-        <label class="selall"><input type="checkbox" id="im-all" checked> <span id="im-all-label">Select all</span></label>
-        <div id="im-grid" class="im-grid"></div>
+        <div id="im-table" class="im-table"></div>
+        <div id="im-grid" class="im-grid" hidden></div>
         <div class="more"><button class="ghost" id="im-more" hidden></button></div>
       </div>
     </div>
@@ -179,15 +180,23 @@
     </div>
 
     <div class="im-bottom" id="im-bottom" hidden>
-      <div class="src-card">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l4 4v14H7z"/><path d="M10 7v3M13 7v3M16 7v3"/></svg>
-        <div class="src-text"><b id="im-src-name"></b>
-          <div class="bar"><div id="im-src-bar"></div></div>
-          <span class="muted small" id="im-src-sub"></span></div>
+      <div class="dest-card">
+        <div class="dest-label">Destination</div>
+        <div class="crumbs" id="im-dest"></div>
+      </div>
+      <div class="bottom-opts">
+        <label class="opt">Create subfolders by:
+          <select id="im-folders">
+            <option value="month_group">Month › Event</option>
+            <option value="year_month">Year › Month</option>
+            <option value="year">Year</option>
+            <option value="none">No subfolders</option>
+          </select></label>
+        <label class="opt"><input type="checkbox" id="op-album"> Add to album: <select id="op-album-sel"></select></label>
       </div>
       <div class="spacer"></div>
       <button class="ghost" id="im-cancel">Cancel</button>
-      <button class="dark big" id="im-go">Import as Renamed</button>
+      <button class="dark big" id="im-go">Import</button>
     </div>
   </section>
 

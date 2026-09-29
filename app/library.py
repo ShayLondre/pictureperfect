@@ -1826,7 +1826,7 @@ class Library:
         return big, "image/jpeg"
 
     def commit_import(self, job, include, ratings=None, event=None, shift=0, album=None,
-                      rename=True, delete_source=False, names=None):
+                      rename=True, delete_source=False, names=None, times=None, tags=None):
         p = getattr(self, "pending_import", None)
         if not p:
             raise ValueError("Please check the folder again.")
@@ -1840,7 +1840,9 @@ class Library:
         rated = {}
         copied_ok = []
         names = {int(k): v for k, v in (names or {}).items()}
-        named_paths = {}
+        times = {int(k): v for k, v in (times or {}).items() if v}
+        tags = {int(k): v for k, v in (tags or {}).items() if v}
+        named_paths, timed_paths, tagged_paths = {}, {}, {}
         job.step("Copying photos to your drive", len(chosen))
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H%M")
         dest_dir = os.path.join(self.root, INBOX, stamp)
@@ -1851,8 +1853,13 @@ class Library:
                 shutil.copy2(it["src"], dest)
                 if os.path.getsize(dest) == os.path.getsize(it["src"]):
                     copied_ok.append(it["src"])
+                rel = os.path.relpath(dest, self.root)
                 if it["i"] in names:
-                    named_paths[os.path.relpath(dest, self.root)] = names[it["i"]]
+                    named_paths[rel] = names[it["i"]]
+                if it["i"] in times:
+                    timed_paths[rel] = times[it["i"]]
+                if it["i"] in tags:
+                    tagged_paths[rel] = tags[it["i"]]
                 if it["i"] in ratings:
                     rated[os.path.relpath(dest, self.root)] = ratings[it["i"]]
                 side = find_sidecar(it["src"])
@@ -1877,11 +1884,22 @@ class Library:
                 self.add_to_group(ids, album, keep_dates=True)
             except ValueError:
                 pass
-        # names you typed for single photos win over the batch name
-        for path, nm in named_paths.items():
+        # what you set for single photos wins over the batch settings
+        def one(path):
             row = self.q("SELECT id FROM files WHERE path=? AND pair_of IS NULL", (path,))
-            if row:
-                self.edit([row[0]["id"]], title=nm)
+            return row[0]["id"] if row else None
+        for path, nm in named_paths.items():
+            fid = one(path)
+            if fid:
+                self.edit([fid], title=nm)
+        for path, when in timed_paths.items():
+            fid = one(path)
+            if fid:
+                self.edit([fid], taken=when)
+        for path, tg in tagged_paths.items():
+            fid = one(path)
+            if fid:
+                self.edit([fid], add_tags=list(tg))
         waiting = self.q("SELECT COUNT(*) AS n FROM files WHERE batch=? AND pair_of IS NULL AND " + NEEDS_SQL, (batch,))[0]["n"]
         filed = {}
         if ids and rename:

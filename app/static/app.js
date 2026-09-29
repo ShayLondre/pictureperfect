@@ -341,7 +341,8 @@ document.addEventListener("keydown", (e) => {
 }, true);
 
 /* ------------------------------------------------------------------ import: rename before importing */
-const IM = { items: [], sel: new Set(), filter: "", view: "grid", shown: 120, settings: {}, albums: [], source: "", state: "start", base: null, over: {} };
+const IM = { items: [], sel: new Set(), filter: "", view: "list", shown: 120, settings: {}, albums: [], source: "", state: "start",
+             base: null, over: {}, times: {}, tags: {}, stars: {}, focus: null, q: "", editing: false };
 const MATCH_LABEL = { exact: "Already in your library", similar: "Looks like one you have", repeat: "Repeated in this folder" };
 const EXT = (n) => { const e = n.slice(n.lastIndexOf(".")).toLowerCase(); return e === ".jpeg" ? ".jpg" : e; };
 
@@ -383,7 +384,11 @@ async function showImport(r) {
   IM.source = r.source;
   IM.shown = 120;
   IM.sel = new Set(IM.items.filter(i => i.status === "new").map(i => i.i));
-  IM.over = {};
+  IM.over = {}; IM.times = {}; IM.tags = {}; IM.stars = {}; IM.q = ""; IM.editing = false;
+  IM.focus = (IM.items.find(i => i.status === "new") || IM.items[0] || {}).i;
+  $("#im-search").value = ""; $("#im-search").hidden = true;
+  $("#im-adv").hidden = true;
+  $("#im-folders").value = IM.settings.folders || "month_group";
   $("#im-event").value = "";
   $("#im-format").value = IM.settings.time === "0" ? "0" : "1";
   const dated = IM.items.filter(i => i.taken).map(i => i.taken).sort();
@@ -431,11 +436,15 @@ function imNamePart(it) {
   if (it.city && it.city !== "At sea") return it.city.replace(/^Near /, "");
   return it.city || "";
 }
-function imTaken(it) { return it.taken ? shiftIso(it.taken, imShift()) : null; }
+function imTaken(it) {
+  if (IM.times[it.i]) return IM.times[it.i];
+  return it.taken ? shiftIso(it.taken, imShift()) : null;
+}
+function imHasTime(it) { return !!IM.times[it.i] || it.has_time; }
 function imNewName(it) {
   const t = imTaken(it);
   if (!t) return null;
-  const withTime = $("#im-format").value === "1" && it.has_time;
+  const withTime = $("#im-format").value === "1" && imHasTime(it);
   const name = imNamePart(it);
   return t.slice(0, 10).replace(/-/g, ".") + (withTime ? " " + t.slice(11, 13) + t.slice(14, 16) : "") + (name ? " " + name : "") + EXT(it.name);
 }
@@ -461,6 +470,26 @@ function imFolder(it, starts) {
   return name ? [st, `${st} ${name}`.replace(/[. ]+$/, "")] : [t.slice(0, 7).replace("-", ".")];
 }
 
+const shortPlace = (p) => { const a = (p || "").split(",").map(x => x.trim()).filter(Boolean); return a.length > 1 ? `${a[0]}, ${a[a.length - 1]}` : (a[0] || ""); };
+function fmtShort(iso) {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  let h = +iso.slice(11, 13); const mi = iso.slice(14, 16);
+  const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12;
+  return { d: `${MONTHS[m - 1]} ${d}, ${y}`, t: `${h}:${mi} ${ap}` };
+}
+function imVisible() {
+  const q = IM.q.toLowerCase();
+  return IM.items.filter(i => (!IM.filter || (IM.filter === "dup" ? i.status !== "new" : i.status === "new")) &&
+    (!q || i.name.toLowerCase().includes(q) || (imNewName(i) || "").toLowerCase().includes(q) || (i.place || "").toLowerCase().includes(q)));
+}
+function nameParts(it) {
+  const nn = imNewName(it);
+  if (!nn) return null;
+  const ext = EXT(it.name), np = imNamePart(it);
+  const prefix = nn.slice(0, nn.length - ext.length - (np ? np.length + 1 : 0));
+  return { prefix, np, ext };
+}
+
 function renderImport() {
   const sel = IM.items.filter(i => IM.sel.has(i.i));
   const size = sel.reduce((a, i) => a + (i.size || 0), 0);
@@ -474,92 +503,186 @@ function renderImport() {
     const c = k === "new" ? IM.items.length - dups : k === "dup" ? dups : IM.items.length;
     b.textContent = `${k === "new" ? "New" : k === "dup" ? "Duplicates" : "All"} (${n(c)})`;
   });
-  // left panel
-  const first = sel.find(i => i.taken) || IM.items.find(i => i.taken);
+  const first = sel.find(i => imTaken(i)) || IM.items.find(i => imTaken(i));
   $("#im-preview").textContent = first ? imNewName(first) : "—";
   const sh = imShift();
-  $("#im-date-note").textContent = sh ? `Every photo moves by ${fmtShift(sh)}, keeping its time of day.` : (IM.base ? "Change it to fix a camera clock — every photo moves by the same amount." : "No dates found in these photos.");
+  $("#im-date-note").textContent = sh ? `Every photo moves by ${fmtShift(sh)}, keeping its time of day.` :
+    (IM.base ? "Change it to fix a camera clock — every photo moves by the same amount." : "No dates found in these photos.");
+  renderDest();
+  renderDetail();
+  const list = imVisible();
+  $("#im-table").hidden = IM.view !== "list";
+  $("#im-grid").hidden = IM.view !== "grid";
+  if (IM.view === "list") renderTable(list); else renderGrid(list);
+  $("#im-more").hidden = list.length <= IM.shown;
+  $("#im-more").textContent = `Show more (${n(list.length - IM.shown)})`;
+  const on = $("#op-rename").checked;
+  $("#im-go").textContent = sel.length ? `Import ${plural(sel.length, "Photo")}${on ? "" : " (keep names)"}` : "Import";
+  $("#im-go").disabled = !sel.length || IM.state === "running";
+}
+
+function renderTable(list) {
+  const allOn = list.length > 0 && list.every(i => IM.sel.has(i.i));
+  const rows = list.slice(0, IM.shown).map(it => {
+    const on = IM.sel.has(it.i);
+    const np = nameParts(it);
+    const t = imTaken(it);
+    const when = t ? fmtShort(t) : null;
+    const newCell = !np ? `<span class="nodate">No date — <button class="link" data-adddate>add one</button></span>`
+      : !$("#op-rename").checked ? `<span class="muted">Keeps its name</span>`
+      : `<div class="fname ${IM.over[it.i] !== undefined ? "mine" : ""}"><span>${esc(np.prefix)}</span><input data-name value="${esc(np.np)}" placeholder="name" spellcheck="false"><span>${esc(np.ext)}</span></div>`;
+    return `<div class="tr ${on ? "" : "off"} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}">
+      <div class="c-chk"><input type="checkbox" data-sel ${on ? "checked" : ""}></div>
+      <div class="c-img"><img loading="lazy" src="/import-thumb/${it.i}" alt=""></div>
+      <div class="c-old">${esc(it.name)}${it.raw ? `<span class="tagx">+ ${esc(EXT(it.raw).slice(1).toUpperCase())}</span>` : ""}
+        ${it.status !== "new" ? `<span class="tagx warn">${MATCH_LABEL[it.status]}</span>` : it.kind === "video" ? `<span class="tagx">Video</span>` : ""}</div>
+      <div class="c-arrow">→</div>
+      <div class="c-new">${newCell}</div>
+      <div class="c-date">${when ? `${when.d}${imHasTime(it) ? `<br><span class="muted">${when.t}</span>` : `<br><span class="muted">time unknown</span>`}` : `<span class="muted">—</span>`}</div>
+      <div class="c-loc">${it.place ? `<svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span class="t" title="${esc(it.place)}">${esc(shortPlace(it.place))}</span>` : `<span class="muted">—</span>`}</div>
+      <div class="c-size">${fmtSize(it.size)}</div>
+    </div>`;
+  }).join("");
+  $("#im-table").innerHTML = `<div class="th">
+      <div class="c-chk"><input type="checkbox" id="im-all" ${allOn ? "checked" : ""}></div>
+      <div class="c-img">Preview</div><div class="c-old">Current Filename</div><div class="c-arrow"></div>
+      <div class="c-new">New Filename <span class="muted">(editable)</span></div>
+      <div class="c-date">Date &amp; Time</div><div class="c-loc">Location</div><div class="c-size">Size</div>
+    </div>` + (rows || `<div class="empty">Nothing here.</div>`);
+}
+
+function renderGrid(list) {
   const starts = imGroupStart();
-  const folders = [];
-  sel.forEach(i => { const f = imFolder(i, starts); if (f) { const k = f.join("/"); if (!folders.includes(k)) folders.push(k); } });
-  const lib = S.state.library.split("/").filter(Boolean).pop();
-  const lines = [`<div class="t">${esc(lib)}</div>`];
-  const seen = new Set();
-  folders.slice(0, 6).forEach(f => {
-    f.split("/").forEach((part, d) => {
-      const key = f.split("/").slice(0, d + 1).join("/");
-      if (seen.has(key)) return; seen.add(key);
-      lines.push(`<div class="t ${d === f.split("/").length - 1 ? "hl" : ""}" style="margin-left:${(d + 1) * 18}px">${esc(part)}</div>`);
-    });
-  });
-  if (folders.length > 6) lines.push(`<div class="hint" style="margin-left:18px">…and ${plural(folders.length - 6, "more folder")}</div>`);
-  const waiting = sel.filter(i => !i.taken).length;
-  if (waiting) lines.push(`<div class="hint" style="margin-left:18px">${plural(waiting, "photo")} with no date will wait in Drive Preview</div>`);
-  $("#im-tree").innerHTML = lines.join("");
-  // grid
-  const list = IM.items.filter(i => !IM.filter || (IM.filter === "dup" ? i.status !== "new" : i.status === "new"));
-  $("#im-grid").classList.toggle("list", IM.view === "list");
   $("#im-grid").innerHTML = list.slice(0, IM.shown).map(it => {
     const on = IM.sel.has(it.i);
     const nn = imNewName(it);
     const f = imFolder(it, starts);
-    return `<div class="ic ${on ? "on" : ""}" data-i="${it.i}" title="${nn && $("#op-rename").checked ? esc((f || []).join(" › ")) : ""}">
-      <div class="ph"><img loading="lazy" src="/import-thumb/${it.i}" alt=""><span class="tick">${on ? "✓" : ""}</span>
+    return `<div class="ic ${on ? "on" : ""} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}" title="${nn ? esc((f || []).join(" › ")) : ""}">
+      <div class="ph"><img loading="lazy" src="/import-thumb/${it.i}" alt=""><span class="tick" data-sel>${on ? "✓" : ""}</span>
         ${it.status !== "new" ? `<span class="tagr warn">${MATCH_LABEL[it.status]}</span>` : it.raw ? `<span class="tagr">RAW+JPEG</span>` : it.kind === "video" ? `<span class="tagr">Video</span>` : ""}</div>
-      <div class="oldn">${esc(it.name)}${it.raw ? " + " + esc(EXT(it.raw).slice(1).toUpperCase()) : ""}</div>
-      ${nn ? ($("#op-rename").checked ? `<div class="newn ${IM.over[it.i] !== undefined ? "mine" : ""}" data-edit title="Click to change this name">${esc(nn)}</div>` : `<div class="oldn">Keeps its name for now</div>`) : `<div class="note">No date — will wait in Drive Preview</div>`}
+      <div class="oldn">${esc(it.name)}</div>
+      ${nn ? ($("#op-rename").checked ? `<div class="newn ${IM.over[it.i] !== undefined ? "mine" : ""}">${esc(nn)}</div>` : `<div class="oldn">Keeps its name for now</div>`) : `<div class="note">No date — add one on the left</div>`}
     </div>`;
   }).join("");
-  $("#im-more").hidden = list.length <= IM.shown;
-  $("#im-more").textContent = `Show more (${n(list.length - IM.shown)})`;
-  $("#im-all").checked = list.length > 0 && list.every(i => IM.sel.has(i.i));
-  $("#im-all-label").textContent = IM.filter === "dup" ? "Select all duplicates" : "Select all";
-  // bottom bar
-  $("#im-src-name").textContent = srcName;
-  $("#im-src-sub").textContent = `${plural(sel.length, "photo")} selected (${fmtSize(size) || "0 KB"})`;
-  $("#im-src-bar").style.width = IM.items.length ? (100 * sel.length / IM.items.length) + "%" : "0";
-  $("#im-go").textContent = $("#op-rename").checked ? "Import as Renamed" : "Import";
-  $("#im-go").disabled = !sel.length || IM.state === "running";
 }
 
+function renderDest() {
+  const starts = imGroupStart();
+  const counts = {};
+  IM.items.filter(i => IM.sel.has(i.i)).forEach(i => {
+    const f = imFolder(i, starts); if (!f) return;
+    const k = f.join("/"); counts[k] = (counts[k] || 0) + 1;
+  });
+  const keys = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  const lib = S.state.library.split("/").filter(Boolean).pop();
+  const folder = `<svg viewBox="0 0 24 24" class="fold"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+  const path = keys.length ? keys[0].split("/").filter(Boolean) : [];
+  $("#im-dest").innerHTML = `${folder}<span>${esc(lib)}</span>` + path.map(p => `<i>›</i><span>${esc(p)}</span>`).join("") +
+    (keys.length > 1 ? ` <span class="more-f" title="${esc(keys.slice(1).map(k => k.split("/").join(" › ")).join("\n"))}">+ ${plural(keys.length - 1, "more folder")}</span>` : "");
+}
+
+function renderDetail() {
+  const it = IM.items.find(i => i.i === IM.focus);
+  if (!it) { $("#im-detail").innerHTML = ""; return; }
+  const t = imTaken(it);
+  const when = t ? fmtShort(t) : null;
+  const bits = [fmtSize(it.size), it.width ? `${it.width} × ${it.height}` : "", it.camera || ""].filter(Boolean).join(" · ");
+  const np = imNamePart(it);
+  const tags = IM.tags[it.i] || [];
+  $("#im-detail").innerHTML = `
+    <div class="dimg"><img src="/import-media/${it.i}" alt="" onerror="this.src='/import-thumb/${it.i}'"></div>
+    <div class="dname">${esc(it.name)}</div>
+    <div class="dmeta">${esc(bits)}</div>
+    <div class="dmeta">${when ? `${when.d}${imHasTime(it) ? " · " + when.t : ""}` : `<span class="nodate">No date yet</span>`}</div>
+    ${it.place ? `<div class="dmeta">📍 ${esc(shortPlace(it.place))}</div>` : ""}
+    ${!IM.editing ? `<div class="drow"><button class="ghost small-btn" id="im-edit-btn">Edit Metadata…</button></div>` : `
+    <div class="dedit">
+      <div class="panel-head">This photo only</div>
+      <label class="fl">Name<input id="ed-name" value="${esc(np)}" placeholder="Event or place"></label>
+      <label class="fl">Date &amp; time<input id="ed-time" type="datetime-local" step="60" value="${t ? t.slice(0, 16) : ""}"></label>
+      <label class="fl">Tags<input id="ed-tags" list="tag-list" value="${esc(tags.join(", "))}" placeholder="e.g. Hugh, Sarah"></label>
+      <div class="fl">Rating<span class="stars big" id="ed-stars">${starsHtml(IM.stars[it.i] || 0, "data-estar")}</span></div>
+      <div class="drow"><button class="link" id="ed-reset">Reset this photo</button><button class="dark" id="ed-done">Done</button></div>
+    </div>`}`;
+  const eb = $("#im-edit-btn");
+  if (eb) eb.onclick = () => { IM.editing = true; renderDetail(); setTimeout(() => $("#ed-name").focus(), 20); };
+  if (!IM.editing) return;
+  const save = () => {
+    const v = $("#ed-name").value.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+    delete IM.over[it.i];
+    if (v !== imNamePart(it)) IM.over[it.i] = v;
+    const tv = $("#ed-time").value;
+    if (tv && (!t || tv !== t.slice(0, 16))) IM.times[it.i] = tv + ":00";
+    const tg = $("#ed-tags").value.split(",").map(x => x.trim()).filter(Boolean);
+    if (tg.length) IM.tags[it.i] = tg; else delete IM.tags[it.i];
+    if (!IM.sel.has(it.i) && (IM.times[it.i] || IM.over[it.i] !== undefined)) IM.sel.add(it.i);
+  };
+  $("#ed-done").onclick = () => { save(); IM.editing = false; renderImport(); };
+  ["#ed-name", "#ed-time", "#ed-tags"].forEach(sel => $(sel).addEventListener("keydown", (e) => { if (e.key === "Enter") $("#ed-done").click(); }));
+  $("#ed-reset").onclick = () => { delete IM.over[it.i]; delete IM.times[it.i]; delete IM.tags[it.i]; delete IM.stars[it.i]; IM.editing = false; renderImport(); };
+  $("#ed-stars").onclick = (e) => {
+    const b = e.target.closest("[data-estar]"); if (!b) return;
+    const v = +b.dataset.estar;
+    IM.stars[it.i] = IM.stars[it.i] === v ? 0 : v;
+    $("#ed-stars").innerHTML = starsHtml(IM.stars[it.i], "data-estar");
+  };
+}
+
+function focusRow(i, edit) {
+  if (IM.focus !== i) IM.editing = false;
+  IM.focus = i;
+  if (edit) IM.editing = true;
+  renderImport();
+}
+
+$("#im-table").addEventListener("click", (e) => {
+  if (IM.state === "running") return;
+  if (e.target.id === "im-all") {
+    imVisible().forEach(i => (e.target.checked ? IM.sel.add(i.i) : IM.sel.delete(i.i)));
+    return renderImport();
+  }
+  const row = e.target.closest(".tr"); if (!row) return;
+  const i = +row.dataset.i;
+  if (e.target.matches("[data-sel]")) { e.target.checked ? IM.sel.add(i) : IM.sel.delete(i); return renderImport(); }
+  if (e.target.closest("[data-adddate]")) return focusRow(i, true);
+  if (e.target.matches("[data-name]")) { if (IM.focus !== i) { IM.focus = i; IM.editing = false; renderDetail();
+      $$("#im-table .tr").forEach(r => r.classList.toggle("focus", +r.dataset.i === i)); } return; }
+  focusRow(i);
+});
+$("#im-table").addEventListener("change", (e) => {
+  if (!e.target.matches("[data-name]")) return;
+  const i = +e.target.closest(".tr").dataset.i;
+  const it = IM.items.find(x => x.i === i);
+  const v = e.target.value.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+  delete IM.over[i];
+  if (v !== imNamePart(it)) IM.over[i] = v;
+  renderImport();
+});
+$("#im-table").addEventListener("keydown", (e) => {
+  if (!e.target.matches("[data-name]")) return;
+  if (e.key === "Enter") e.target.blur();
+  if (e.key === "Escape") { e.target.value = imNamePart(IM.items.find(x => x.i === +e.target.closest(".tr").dataset.i)); e.target.blur(); }
+});
 $("#im-grid").onclick = (e) => {
   const c = e.target.closest(".ic"); if (!c || IM.state === "running") return;
   const i = +c.dataset.i;
-  if (e.target.closest("input")) return;
-  const ed = e.target.closest("[data-edit]");
-  if (ed) {   // change the suggested name for just this photo
-    const it = IM.items.find(x => x.i === i);
-    const nn = imNewName(it);
-    const prefix = nn.slice(0, nn.length - EXT(it.name).length - (imNamePart(it) ? imNamePart(it).length + 1 : 0));
-    ed.outerHTML = `<div class="newedit"><span>${esc(prefix)}</span><input value="${esc(imNamePart(it))}" data-i="${i}"><span>${esc(EXT(it.name))}</span></div>`;
-    const inp = c.querySelector(".newedit input");
-    inp.focus(); inp.select();
-    const done = (save) => {
-      if (save) {
-        const v = inp.value.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
-        delete IM.over[i];
-        if (v !== imNamePart(it)) IM.over[i] = v;
-      }
-      renderImport();
-    };
-    inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter") done(true); if (ev.key === "Escape") done(false); });
-    inp.addEventListener("blur", () => done(true));
-    return;
-  }
-  IM.sel.has(i) ? IM.sel.delete(i) : IM.sel.add(i);
-  renderImport();
-};
-$("#im-all").onchange = (e) => {
-  IM.items.filter(i => !IM.filter || (IM.filter === "dup" ? i.status !== "new" : i.status === "new"))
-    .forEach(i => (e.target.checked ? IM.sel.add(i.i) : IM.sel.delete(i.i)));
-  renderImport();
+  if (e.target.closest("[data-sel]")) { IM.sel.has(i) ? IM.sel.delete(i) : IM.sel.add(i); return renderImport(); }
+  focusRow(i);
 };
 $("#im-filter").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; IM.filter = b.dataset.k;
   $$("#im-filter button").forEach(x => x.classList.toggle("on", x === b)); IM.shown = 120; renderImport(); };
 $("#im-view").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; IM.view = b.dataset.v;
   $$("#im-view button").forEach(x => x.classList.toggle("on", x === b)); renderImport(); };
+$("#im-search-btn").onclick = () => { const s2 = $("#im-search"); s2.hidden = !s2.hidden; if (!s2.hidden) s2.focus(); else { s2.value = ""; IM.q = ""; renderImport(); } };
+$("#im-search").addEventListener("input", (e) => { IM.q = e.target.value.trim(); IM.shown = 120; renderImport(); });
 $("#im-more").onclick = () => { IM.shown += 120; renderImport(); };
-["#im-event", "#im-date", "#im-format", "#op-album-sel"].forEach(sel => $(sel).addEventListener("input", renderImport));
+["#im-event", "#im-date", "#im-format"].forEach(sel => $(sel).addEventListener("input", renderImport));
+$("#im-adv-btn").onclick = () => { $("#im-adv").hidden = !$("#im-adv").hidden; };
+$("#im-folders").onchange = async (e) => {
+  IM.settings.folders = e.target.value;
+  renderImport();
+  try { await api("/api/organize/settings", { folders: e.target.value }); } catch (err) { fail(err); }
+};
 $("#op-album-sel").addEventListener("change", () => { $("#op-album").checked = !!$("#op-album-sel").value; renderImport(); });
 $("#op-album").onchange = renderImport;
 $("#op-rename").onchange = renderImport;
@@ -574,10 +697,12 @@ $("#im-go").onclick = () => {
   if (!include.length) return;
   if ($("#op-delete").checked && !confirm(`After copying, move the ${plural(include.length, "original")} to the Trash? You can Put Back from the Trash until you empty it.`)) return;
   const al = albumChosen();
+  const pick = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => IM.sel.has(+k)));
   api("/api/import/commit", {
-    include, event: al ? "" : $("#im-event").value.trim(), shift: imShift(), album: al ? al.key : null, names: IM.over,
+    include, event: al ? "" : $("#im-event").value.trim(), shift: imShift(), album: al ? al.key : null,
+    names: pick(IM.over), times: pick(IM.times), tags: pick(IM.tags), ratings: pick(IM.stars),
     rename: $("#op-rename").checked, delete_source: $("#op-delete").checked,
-  }).then(() => { IM.last = { names: include.length }; importScreen("running"); S.lastJobFinished = false; refreshState(); }).catch(fail);
+  }).then(() => { importScreen("running"); S.lastJobFinished = false; refreshState(); }).catch(fail);
 };
 
 function showImportReview(res) {

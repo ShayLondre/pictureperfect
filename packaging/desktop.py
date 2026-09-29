@@ -64,7 +64,7 @@ def main():
             time.sleep(0.1)
     import webview
     webview.create_window("Picture Perfect", "http://127.0.0.1:%d/" % port,
-                          width=1320, height=880, min_size=(960, 640))
+                          width=1440, height=900, min_size=(1000, 660))
     webview.start()
     os._exit(0)
 

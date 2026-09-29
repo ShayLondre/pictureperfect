@@ -900,10 +900,15 @@ class Library:
     # Scanning
     # ======================================================================= #
 
+    # trash / recycle bins and system folders that Mac or Windows keep on a drive
+    SYSTEM_DIRS = {"$recycle.bin", "recycler", "recycled", "system volume information",
+                   "trash", "trashes", "network trash folder", "temporary items", "found.000", "lost+found"}
+
     def _walk(self, top, skip_library_dirs=True):
         for dirpath, dirnames, filenames in os.walk(top):
             rel_dir = os.path.relpath(dirpath, top)
             dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                                 and d.lower() not in self.SYSTEM_DIRS
                                  and not (skip_library_dirs and rel_dir == "." and
                                           (d == SET_ASIDE or HIGHLIGHTS_RE.match(d))))
             for fn in sorted(filenames):

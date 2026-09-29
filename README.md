@@ -64,7 +64,7 @@ One folder per month, and inside it one folder per trip or event (photos that sh
 ## Good to know
 
 - The app's catalog and previews live in a hidden `.photo-organizer` folder on the drive. Deleting it just makes the app rescan from scratch. On Windows this folder (and the small `.highlights.json` in each Highlights folder) shows up because Windows doesn't hide dot-folders — just leave them be.
-- Works with exFAT drives shared between Mac and Windows: names and folders are Windows-safe, and the Mac's little `._` files are ignored. The app itself runs on the Mac.
+- Works with exFAT drives shared between Mac and Windows: names and folders are Windows-safe, and the Mac's little `._` files are ignored. Photos in the Mac Trash or the Windows Recycle Bin on the drive are ignored too. The app itself runs on the Mac.
 - A photo's exact GPS position is never replaced; only photos without one get a location, and only when you choose it. The exact place (e.g. *Long Island City*) is kept in the photo's details and search, while folder and file names use the city (*New York City*) unless you've named the photos yourself.
 - Everything matches: the date and time in the name, the date saved inside the photo, and the Created / Modified dates Finder shows. Places and tags are saved inside the photo too, so Finder search and Apple Photos can see them.
 - Undo covers names and folders. Locations and dates saved into photos stay (your backup drive has the originals).

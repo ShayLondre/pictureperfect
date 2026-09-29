@@ -344,71 +344,110 @@
     <div class="empty" id="loc-empty" hidden><div class="big-check">✓</div>Every photo has a location.</div>
   </section>
 
-  <!-- Tidy Up: names and folders for photos already on the drive -->
-  <section id="v-organize" class="view import-view" hidden>
-    <div class="im-main">
-      <div class="im-left">
-        <h1 class="serif">Tidy Up</h1>
-        <p class="sub small">Gives the photos that were already on your drive the same names and folders as your imports. New photos don't need this — Import already does it.</p>
-
-        <div class="panel">
-          <div class="panel-head">Your naming style</div>
-          <label class="fl">Folders
-            <select id="org-folders">
-              <option value="month_group">Month › Trip</option>
-              <option value="year_month">Year › Month</option>
-              <option value="year">Year</option>
-              <option value="none">No folders</option>
-            </select></label>
-          <div class="hint" id="org-folders-note"></div>
-          <label class="fl">Filename format
-            <select id="org-time">
-              <option value="1">YYYY.MM.DD HHMM Event</option>
-              <option value="0">YYYY.MM.DD Event</option>
-            </select></label>
-          <div class="hint">Example:</div>
-          <div class="example-path" id="org-example"></div>
-          <div class="hint">The same style is used when you import.</div>
+  <!-- Tidy Up: pick photos already on the drive and fix them -->
+  <section id="v-organize" class="view tu-view" hidden>
+    <div class="tu">
+      <aside class="tu-left">
+        <div class="tu-top">
+          <div>
+            <h1 class="serif" id="tu-title">Tidy Up</h1>
+            <p class="sub small" id="tu-sub">Select photos on the right, then rename them, fix dates and places, and file them.</p>
+          </div>
         </div>
-
-        <div class="panel">
-          <div class="panel-head">Year Highlights</div>
-          <label class="fl">Copy these photos into a Highlights folder for each year
+        <div class="tu-actions">
+          <button class="ghost" id="tu-cancel">Cancel</button>
+          <button class="dark" id="tu-save" disabled>Save Changes</button>
+        </div>
+        <div class="panel" id="tu-empty">
+          <div class="panel-head">Nothing selected yet</div>
+          <div class="hint">Open a folder or search, then tick the photos you want to tidy up — or use <b>Select all</b>. Each photo shows the name it would get; you can type over any of them.</div>
+        </div>
+        <div id="tu-edit" hidden>
+          <div class="tabs2" id="tu-tabs">
+            <button data-t="name" class="on">Filename</button>
+            <button data-t="date">Date &amp; Time</button>
+            <button data-t="place">Location</button>
+            <button data-t="keys">Keywords</button>
+          </div>
+          <div class="panel" data-pane="name">
+            <label class="fl">Name for all selected photos
+              <input id="tu-name-all" placeholder="Leave empty to keep each photo's own name" autocomplete="off" list="pp-albums"></label>
+            <label class="fl">Filename format
+              <select id="tu-format">
+                <option value="1">YYYY.MM.DD HHMM Event</option>
+                <option value="0">YYYY.MM.DD Event</option>
+              </select></label>
+            <label class="fl">Folders
+              <select id="tu-folders">
+                <option value="month_group">Month › Trip</option>
+                <option value="year_month">Year › Month</option>
+                <option value="year">Year</option>
+                <option value="none">No folders</option>
+              </select></label>
+            <div class="hint" id="tu-folders-note"></div>
+          </div>
+          <div class="panel" data-pane="date" hidden>
+            <label class="fl">Date &amp; time of the first selected photo
+              <input type="datetime-local" step="60" id="tu-when"></label>
+            <div class="hint" id="tu-when-note"></div>
+          </div>
+          <div class="panel" data-pane="place" hidden>
+            <div class="fl">Location
+              <div class="placerow"><button class="ghost placepick" id="tu-place">+ Add a place</button><button class="link" id="tu-place-clear" hidden>Clear</button></div></div>
+            <label class="opt"><input type="checkbox" id="tu-place-all"> Also replace locations that came from GPS</label>
+            <div class="hint" id="tu-place-note"></div>
+          </div>
+          <div class="panel" data-pane="keys" hidden>
+            <label class="fl">Add keywords<input id="tu-tags" list="tag-list" placeholder="e.g. Hugh, Sailing" autocomplete="off"></label>
+            <label class="fl">Add to album<select id="tu-album"></select></label>
+            <div class="hint">Adding to an album gives the photos that album's name and puts them in its folder.</div>
+          </div>
+          <div class="panel">
+            <div class="panel-head" id="tu-prev-head">Preview</div>
+            <div id="tu-preview" class="tu-preview"></div>
+            <button class="link" id="tu-prev-more" hidden></button>
+          </div>
+        </div>
+        <details class="tu-more">
+          <summary>Year Highlights &amp; undo</summary>
+          <label class="fl">Copy these into a Highlights folder for each year
             <select id="org-hl">
               <option value="5">★★★★★ only</option>
               <option value="4">★★★★ and up</option>
               <option value="off">Off — no Highlights folders</option>
             </select></label>
           <div class="hint" id="org-hl-note"></div>
-          <button class="ghost small-btn" id="btn-hl">Update highlights now</button>
-        </div>
+          <div class="row"><button class="ghost small-btn" id="btn-hl">Update highlights now</button>
+          <button class="ghost small-btn" id="btn-undo" hidden>Undo last save</button></div>
+        </details>
+      </aside>
 
-        <div class="panel">
-          <div class="panel-head">What will change</div>
-          <div id="org-stats" class="org-stats"></div>
-        </div>
-        <div class="callout soft small" id="org-dupes-note" hidden></div>
-      </div>
-
-      <div class="im-right">
-        <div class="im-head">
-          <div>
-            <h2 class="serif" id="org-count"></h2>
-            <div class="sub small">Grouped by the folder each photo goes into. Change a group's name to rename all of its photos, or change one photo on its own.</div>
+      <div class="tu-right">
+        <div class="tu-bar">
+          <nav class="crumbs2" id="tu-crumbs"></nav>
+          <div class="searchbox2">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input id="tu-q" placeholder="Search photos, places, or names" autocomplete="off">
           </div>
         </div>
-        <div id="org-list"></div>
+        <div class="im-head">
+          <div>
+            <h2 class="serif" id="tu-folder-title">Library</h2>
+            <div class="sub small" id="tu-folder-sub"></div>
+          </div>
+          <div class="im-tools">
+            <label class="selall"><input type="checkbox" id="tu-all"> Select all</label>
+            <div class="seg" id="tu-filter">
+              <button data-k="" class="on">All</button>
+              <button data-k="sel">Selected</button>
+              <button data-k="edit">Edited</button>
+            </div>
+          </div>
+        </div>
+        <div class="tu-folder-cards" id="tu-folder-cards"></div>
+        <div class="tu-grid" id="tu-grid"></div>
+        <div class="empty" id="tu-none" hidden>No photos here.</div>
       </div>
-    </div>
-
-    <div class="im-bottom">
-      <div class="bottom-note">
-        <b>Nothing changes until you press Apply.</b>
-        <span class="muted small">Photos are renamed and moved on your drive, and dates, places and tags are saved into them.</span>
-      </div>
-      <div class="spacer"></div>
-      <button class="ghost" id="btn-undo" hidden>Undo last tidy-up</button>
-      <button class="dark big" id="btn-apply" disabled>Apply changes</button>
     </div>
   </section>
 </main>

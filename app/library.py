@@ -2663,7 +2663,7 @@ class Library:
             self._gm = gm
             return gm
 
-    def target_for(self, r, s):
+    def target_for(self, r, s, group=None):
         # Style: 2025.12.25 1432 St. Barts Xmas NYE.jpg  (date, time, location + event)
         taken = r["taken"]
         parts = [taken[:10].replace("-", ".")]
@@ -2675,7 +2675,7 @@ class Library:
         fname = " ".join(parts) + norm_ext(os.path.splitext(r["path"])[1])
         mode = s.get("folders", "month_group")
         if mode == "month_group":
-            g = self.group_months().get(r["id"])
+            g = group if group is not None else self.group_months().get(r["id"])
             if g:
                 folder = os.path.join(g[0], BAD_CHARS_RE.sub(" ", "%s %s" % g).strip().rstrip(" ."))
             else:
@@ -2687,6 +2687,204 @@ class Library:
         else:
             folder = ""
         return os.path.join(folder, fname) if folder else fname
+
+    # ======================================================================= #
+    # Tidy Up: pick photos already on the drive, change them, save just those
+    # ======================================================================= #
+
+    def tidy_browse(self, folder="", q="", limit=600):
+        folder = folder.strip("/")
+        rows = self.q("SELECT * FROM files WHERE status='active' AND pair_of IS NULL ORDER BY taken, path")
+        final = {c["id"]: c["new"] for c in self.plan() if not c["lead"]}
+        raws = self._raw_map()
+        pre = folder + "/" if folder else ""
+        subs = {}
+        here = []
+        if q:
+            ids = set(self.search(name=q, ids_only=True)) | set(self.search(place=q, ids_only=True))
+            here = [r for r in rows if r["id"] in ids]
+        else:
+            for r in rows:
+                p = r["path"]
+                if pre and not p.startswith(pre):
+                    continue
+                rest = p[len(pre):]
+                if "/" in rest:
+                    name = rest.split("/", 1)[0]
+                    d = subs.setdefault(name, {"name": name, "path": pre + name, "count": 0, "cover": None})
+                    d["count"] += 1
+                    if d["cover"] is None and r["thumb"] == 1:
+                        d["cover"] = r["id"]
+                else:
+                    here.append(r)
+        s = self.settings()
+        photos = []
+        for r in here[:limit]:
+            new = final.get(r["id"], r["path"])
+            photos.append(dict(self._split_name(r, new), id=r["id"], name=os.path.basename(r["path"]), path=r["path"],
+                               taken=r["taken"], date_source=r["date_source"], place=r["place"], kind=r["kind"],
+                               thumb=r["thumb"], tags=split_tags(r["tags"]), raw=raws.get(r["id"]),
+                               lat=r["lat"], needs=r["date_source"] in NEEDS_DATE + NEEDS_TIME,
+                               tidy=new == r["path"]))
+        dated = sorted([d for d in subs.values() if d["name"][:1].isdigit()], key=lambda d: d["name"], reverse=True)
+        other = sorted([d for d in subs.values() if not d["name"][:1].isdigit()], key=lambda d: d["name"].lower())
+        folders = dated + other   # newest year and month first, then other folders
+        return {"folder": folder, "folders": folders, "photos": photos, "total": len(here),
+                "settings": s, "albums": [{"key": g["key"], "name": g["name"], "start": g["start"]} for g in self.groups()[:300]]}
+
+    def _split_name(self, r, new, name=None):
+        """Split a planned name into the fixed date part, the editable name, the number and the ending."""
+        stem, ext = os.path.splitext(os.path.basename(new))
+        m = re.match(r"^((?:19|20)\d{2}\.\d{2}\.\d{2}(?: \d{4})?)(?: |$)", stem)
+        prefix = (m.group(1) + " ") if m else ""
+        rest = stem[m.end():] if m else stem
+        name = self.name_part(r) if name is None else name
+        name = name or ""
+        if rest == name:
+            suffix = ""
+        elif name and rest.startswith(name) and re.match(r"^ \d+$", rest[len(name):]):
+            suffix = rest[len(name):]
+        else:
+            name, suffix = rest, ""
+        return {"prefix": prefix, "np": name, "suffix": suffix, "ext": ext, "new": new, "folder_new": os.path.dirname(new)}
+
+    def _tidy_rows(self, ids, title=None, names=None, shift=0, place=None, replace_place=False):
+        """The selected photos as they would be after the edits (nothing is saved)."""
+        ids = [int(i) for i in ids]
+        names = {int(k): v for k, v in (names or {}).items()}
+        rows = self.q("SELECT * FROM files WHERE status='active' AND id IN (%s)" % ",".join("?" * len(ids)), ids) if ids else []
+        out = []
+        city_cache = {}
+        for r in rows:
+            r = dict(r)
+            if r["id"] in names:
+                r["title"] = BAD_CHARS_RE.sub(" ", names[r["id"]]).strip()
+            elif title is not None:
+                r["title"] = BAD_CHARS_RE.sub(" ", title).strip()
+            if shift and r["date_source"] not in NEEDS_DATE:
+                t = dt.datetime.strptime(r["taken"], "%Y-%m-%dT%H:%M:%S") + dt.timedelta(seconds=int(shift))
+                r["taken"] = t.strftime("%Y-%m-%dT%H:%M:%S")
+                if r["date_source"] not in NO_TIME:
+                    r["date_source"] = "manual"
+            if place and (replace_place or r["lat"] is None):
+                key = (round(place["lat"], 4), round(place["lon"], 4))
+                if key not in city_cache:
+                    self.geo.load()
+                    city_cache[key] = self.geo.city(place["lat"], place["lon"]) if self.geo.grid is not None else None
+                r["lat"], r["lon"] = place["lat"], place["lon"]
+                r["city"] = city_cache[key] or place.get("name")
+                r["place"] = place.get("label") or place.get("name")
+            out.append(r)
+        return out
+
+    def tidy_preview(self, ids, title=None, names=None, shift=0, place=None, replace_place=False):
+        s = self.settings()
+        rows = [r for r in self._tidy_rows(ids, title, names, shift, place, replace_place)
+                if r["date_source"] not in NEEDS_DATE + NEEDS_TIME]
+        sel = set(r["id"] for r in rows)
+        # trips stay together in the month they began (counting photos not selected that share the name)
+        starts = {}
+        if s.get("folders", "month_group") == "month_group":
+            names_here = defaultdict(list)
+            for r in rows:
+                nm = self.name_part(r)
+                if nm:
+                    names_here[nm.lower()].append(r)
+            others = defaultdict(list)
+            for r in self.q("SELECT * FROM files WHERE status='active' AND pair_of IS NULL"):
+                if r["id"] in sel or r["date_source"] in NEEDS_DATE:
+                    continue
+                nm = self.name_part(r)
+                if nm and nm.lower() in names_here:
+                    others[nm.lower()].append(r)
+            for key, group in names_here.items():
+                pool = sorted(group + others.get(key, []), key=lambda x: x["taken"])
+                # the run of photos (gaps under two weeks) around the selection
+                runs, cur = [], [pool[0]]
+                for a, b in zip(pool, pool[1:]):
+                    if iso_to_ts(b["taken"]) - iso_to_ts(a["taken"]) > GROUP_GAP:
+                        runs.append(cur)
+                        cur = []
+                    cur.append(b)
+                runs.append(cur)
+                for run in runs:
+                    month = run[0]["taken"][:7].replace("-", ".")
+                    nm = Counter(self.name_part(x) for x in run).most_common(1)[0][0]
+                    for x in run:
+                        if x["id"] in sel:
+                            starts[x["id"]] = (month, nm)
+        items = []
+        month_group = s.get("folders", "month_group") == "month_group"
+        for r in rows:
+            # a photo with no name goes straight into its month folder
+            target = self.target_for(r, s, starts.get(r["id"], ())) if month_group else self.target_for(r, s)
+            items.append((r, target))
+        # number photos that would share a name, in the order they were taken
+        by = defaultdict(list)
+        for r, t in items:
+            by[t.lower()].append((r, t))
+        final = {}
+        for key, group in by.items():
+            t = group[0][1]
+            stem, ext = os.path.splitext(t)
+            used = set()
+            for x in self.q("SELECT id, path FROM files WHERE status='active' AND lower(path) LIKE ? ESCAPE '\\'",
+                            (stem.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",)):
+                if x["id"] in sel:
+                    continue
+                p = x["path"].lower()
+                if not p.endswith(ext.lower()):
+                    continue
+                rest = p[len(stem):len(p) - len(ext)]
+                if rest == "":
+                    used.add(1)
+                elif rest.startswith(" ") and rest[1:].isdigit():
+                    used.add(int(rest[1:]))
+            group.sort(key=lambda g: (g[0]["taken"], g[0]["path"]))
+            k = 1
+            for r, _ in group:
+                while k in used:
+                    k += 1
+                used.add(k)
+                final[r["id"]] = t if k == 1 else "%s %d%s" % (stem, k, ext)
+        out = []
+        for r in rows:
+            new = final[r["id"]]
+            out.append(dict(self._split_name(r, new), id=r["id"], old=r["path"], changes=new != r["path"]))
+        waiting = len(ids) - len(rows)
+        return {"items": out, "waiting": waiting}
+
+    def tidy_save(self, job, ids, title=None, names=None, shift=0, place=None, replace_place=False,
+                  tags=None, album=None):
+        ids = [int(i) for i in ids]
+        names = {int(k): v for k, v in (names or {}).items()}
+        job.step("Saving your changes")
+        if album:
+            try:
+                self.add_to_group(ids, album, keep_dates=True)
+            except ValueError:
+                pass
+        elif title is not None:
+            rest = [i for i in ids if i not in names]
+            if rest:
+                self.edit(rest, title=title)
+        for i, nm in names.items():
+            self.edit([i], title=nm)
+        if shift:
+            dated = [r["id"] for r in self.q("SELECT id FROM files WHERE id IN (%s) AND NOT %s"
+                                             % (",".join("?" * len(ids)), NEEDS_SQL), ids)]
+            if dated:
+                self.edit(dated, shift=int(shift))
+        if place:
+            targets = ids if replace_place else [r["id"] for r in self.q(
+                "SELECT id FROM files WHERE lat IS NULL AND id IN (%s)" % ",".join("?" * len(ids)), ids)]
+            if targets:
+                self.set_location(targets, place["lat"], place["lon"], place.get("label"), place.get("name"))
+        if tags:
+            self.edit(ids, add_tags=list(tags))
+        result = self.apply(job, ids)
+        result["tidied"] = len(ids)
+        return result
 
     def plan(self):
         s = self.settings()

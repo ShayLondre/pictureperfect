@@ -105,6 +105,7 @@ function summarize(job) {
   if (r.highlights_added) bits.push(`${plural(r.highlights_added, "photo")} added to highlights`);
   if (r.highlights_removed) bits.push(`${plural(r.highlights_removed, "photo")} taken out of highlights`);
   if (r.faces !== undefined) bits.push(`${plural(r.faces, "face")} found so far — see the People tab`);
+  if (r.tidied !== undefined) bits.push(`${plural(r.tidied, "photo")} tidied up`);
   if (r.picked !== undefined) {
     bits.push(`${n(r.picked)} kept`, `${n(r.trashed)} moved to the Trash`);
     if (r.set_aside) bits.push(`${n(r.set_aside)} couldn't go to the Trash and are in _Set aside`);
@@ -125,6 +126,7 @@ async function poll() {
       if (st.job && st.job.error && (IM.state === "checking" || IM.state === "running")) importScreen(IM.state === "running" ? "pick" : "start");
       if (res.import_check && !st.job.error) showImport();
       else if (res.imported_ids !== undefined && !st.job.error) showImportReview(res);
+      else if (res.tidied !== undefined && !st.job.error) { tuReset(); if (S.tab === "organize") loadTidy(); loadAlbums(); }
       else if (res.inbox_new && !st.job.error) showTab("inbox");   // new photos found on the drive
       else if (S.tab === "inbox" && R.mode !== "inbox") showTab("inbox", true);
       else showTab(S.tab, true);
@@ -860,7 +862,7 @@ function showTab(tab, soft) {
   if (tab === "pick" && !soft) loadPickGroups();
   if (tab === "people") { if (!soft) PP.detail = null; PP.detail ? openDetail(PP.detail) : loadPeople(); }
   if (tab === "locations") loadLocations(true);
-  if (tab === "organize") loadOrganize();
+  if (tab === "organize") loadTidy();
 }
 
 /* ------------------------------------------------------------------ browse */
@@ -1329,125 +1331,213 @@ $("#pk-save").onclick = async () => {
   } catch (e) { fail(e); }
 };
 
-/* ------------------------------------------------------------------ organize */
-const ORG = { offset: 0, groups: [] };
-async function loadOrganize(data) {
-  let r = data;
-  if (!r) {
-    $("#org-stats").innerHTML = `<p class="hint">Working out the changes…</p>`;
-    try { r = await api("/api/organize?offset=" + ORG.offset); } catch (e) { return fail(e); }
-  }
-  const s = r.settings;
-  $("#org-folders").value = s.folders || "month_group";
-  $("#org-time").value = s.time === "0" ? "0" : "1";
-  $("#org-hl").value = s.highlights || "5";
-  $("#org-folders-note").textContent = {
-    month_group: "One folder per month, and inside it a folder for each trip or event. Photos without a name go straight in the month.",
-    year_month: "A folder per year with a folder per month inside. No trip folders.",
-    year: "One folder per year, with every photo from that year inside.",
-    none: "No folders — every photo sits together, sorted by its name.",
-  }[s.folders || "month_group"];
-  const f = { month_group: ["2025.07", "2025.07 Spain"], year_month: ["2025", "2025-07"], year: ["2025"], none: [] }[s.folders || "month_group"];
-  const fold = `<svg viewBox="0 0 24 24" class="fold"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
-  $("#org-example").innerHTML = f.map(x => `<div class="t2">${fold}${esc(x)}</div>`).join("") +
-    `<div class="t2 file" style="margin-left:${f.length * 16}px">2025.07.14${s.time === "1" ? " 1030" : ""} Spain.jpg</div>`;
-  $$("#org-example .t2").forEach((el, i) => { if (!el.classList.contains("file")) el.style.marginLeft = (i * 16) + "px"; });
-  $("#org-hl-note").innerHTML = s.highlights === "off"
-    ? "No Highlights folders are made."
-    : `📁 <b>2025 Highlights</b> sits next to the month folders and holds a copy of every ${s.highlights === "5" ? "5-star" : "4- and 5-star"} photo from that year, so a year's best is in one place. The originals stay where they are. ${plural(r.highlights, "photo")} qualify right now.`;
-  $("#btn-hl").hidden = s.highlights === "off";
-
-  const dg = (S.state.stats || {}).dup_groups || 0;
-  $("#org-dupes-note").hidden = !dg;
-  $("#org-dupes-note").innerHTML = dg ? `You have ${plural(dg, "duplicate group")} to review. It's fine to tidy up first, but clearing duplicates first means fewer files to rename. <button class="link" id="org-go-dupes" style="padding:0">Open Duplicates ›</button>` : "";
-  const gd = $("#org-go-dupes"); if (gd) gd.onclick = () => showTab("dupes");
-
-  const line = (num, label) => `<div class="srow"><span>${label}</span><b>${n(num)}</b></div>`;
-  $("#org-stats").innerHTML =
-    line(r.renames, "Photos to rename or move") +
-    (r.gps ? line(r.gps, "Locations to save into photos") : "") +
-    (r.dates ? line(r.dates, "Dates to save into photos") : "") +
-    (r.tags ? line(r.tags, "Photos with new tags") : "") +
-    (r.needs_date ? `<div class="srow warnrow"><span>Waiting for a date or time</span><b>${n(r.needs_date)}</b></div>
-       <button class="link" style="padding:0;font-size:13px" id="org-needs">Add dates &amp; times ›</button>` : "") +
-    (!r.renames && !r.gps && !r.dates && !r.tags ? `<div class="hint">Nothing to change — your drive is tidy.</div>` : "");
-  const nb = $("#org-needs");
-  if (nb) nb.onclick = () => { R.mode = "needs"; showTab("inbox", true); };
-  $("#org-count").textContent = r.renames ? `${plural(r.renames, "photo")} to tidy up` : "All tidy";
-  $("#btn-apply").disabled = !r.total;
-  $("#btn-apply").textContent = r.total ? `Apply changes (${n(r.renames || r.total)})` : "Apply changes";
-  $("#btn-undo").hidden = !r.can_undo;
-
-  ORG.offset = r.group_offset || 0;
-  ORG.groups = r.groups || [];
-  const pages = r.group_total > 40;
-  $("#org-list").innerHTML = r.renames ? `
-    <p class="hint org-hint">Leave a name empty to use the place instead.</p>` +
-    ORG.groups.map((g, gi) => `
-    <div class="ogroup" data-g="${gi}">
-      <div class="ogroup-head">
-        <div class="ofolder">📁 ${esc(g.folder.split("/").join(" › ") || "top of drive")}</div>
-        <label class="oname">Name for ${g.count === 1 ? "this photo" : `all ${n(g.count)} photos`}
-          <input data-gname value="${esc(g.name)}" placeholder="Event or place" spellcheck="false"></label>
-      </div>
-      ${g.items.map(c => {
-        const flags = [c.gps ? "+ location" : "", c.date ? "+ date" : "", c.tags ? "+ tags" : ""].filter(Boolean).join(" ");
-        return `<div class="orow" data-id="${c.id}">
-          <img loading="lazy" src="/thumb/${c.id}" alt="">
-          <div class="oold">${esc(fileOf(c.old))}${c.raw.length ? ` <span class="tagx">+ ${esc(c.raw.join(", "))}</span>` : ""}</div>
-          <div class="c-arrow">→</div>
-          <div class="fname ${c.own ? "mine" : ""}"><span>${esc(c.prefix)}</span><input data-name value="${esc(c.name)}" placeholder="name" spellcheck="false">${c.suffix ? `<span class="num">${esc(c.suffix)}</span>` : ""}<span>${esc(c.ext)}</span></div>
-          ${flags ? `<span class="flags">${flags}</span>` : ""}
-        </div>`;
-      }).join("")}
-      ${g.count > g.items.length ? `<div class="tail">…and ${n(g.count - g.items.length)} more in this folder — the group name changes them all</div>` : ""}
-    </div>`).join("") +
-    (pages ? `<div class="org-pages">
-      <button class="ghost" id="org-prev" ${ORG.offset ? "" : "disabled"}>‹ Previous folders</button>
-      <span class="muted small">Folders ${n(ORG.offset + 1)}–${n(Math.min(ORG.offset + 40, r.group_total))} of ${n(r.group_total)}</span>
-      <button class="ghost" id="org-next" ${ORG.offset + 40 < r.group_total ? "" : "disabled"}>Next folders ›</button></div>` : "")
-    : `<div class="empty"><div class="big-check">✓</div>Everything on your drive already has the Picture Perfect names and folders.</div>`;
-  const pv = $("#org-prev"), nx = $("#org-next");
-  if (pv) pv.onclick = () => { ORG.offset = Math.max(0, ORG.offset - 40); loadOrganize(); window.scrollTo(0, 0); };
-  if (nx) nx.onclick = () => { ORG.offset += 40; loadOrganize(); window.scrollTo(0, 0); };
-}
-
-async function orgRename(ids, title) {
-  const y = window.scrollY;
-  try {
-    await api("/api/edit", { ids, title: title.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() });
-    await loadOrganize();
-    window.scrollTo(0, y);
-    loadAlbums();
-  } catch (e) { fail(e); }
-}
-$("#org-list").addEventListener("change", (e) => {
-  const grp = e.target.closest(".ogroup"); if (!grp) return;
-  const g = ORG.groups[+grp.dataset.g];
-  if (e.target.matches("[data-gname]")) {
-    // everything in this folder — including photos beyond the first 60 shown
-    return api(`/api/organize/group-ids?folder=${encodeURIComponent(g.folder)}`).then(ids => orgRename(ids, e.target.value)).catch(fail);
-  }
-  if (e.target.matches("[data-name]")) orgRename([+e.target.closest(".orow").dataset.id], e.target.value);
-});
-$("#org-list").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.matches("input")) e.target.blur();
-});
-
-async function saveSetting(key, value) {
-  try { loadOrganize(await api("/api/organize/settings", { [key]: value })); } catch (e) { fail(e); }
-}
-$("#org-folders").onchange = (e) => saveSetting("folders", e.target.value);
-$("#org-time").onchange = (e) => saveSetting("time", e.target.value);
-$("#org-hl").onchange = (e) => saveSetting("highlights", e.target.value);
-$("#btn-hl").onclick = () => api("/api/highlights", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
-$("#btn-apply").onclick = () => {
-  if (!confirm("Rename and move your photos now? You can undo the renaming afterwards.")) return;
-  api("/api/organize/apply", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+/* ------------------------------------------------------------------ tidy up (photos already on the drive) */
+const TU = { folder: "", q: "", photos: [], folders: [], info: {}, sel: new Set(), names: {}, pv: {}, pvList: [],
+             waiting: 0, filter: "", tab: "name", place: null, when: "", all: false, settings: {}, albums: [] };
+const TU_FOLDER_NOTE = {
+  month_group: "A folder for each month, and inside it one for each trip or event.",
+  year_month: "A folder for each year, with a folder for each month inside.",
+  year: "One folder per year.",
+  none: "No folders — every photo together, sorted by name.",
 };
+
+async function loadTidy() {
+  let r;
+  try { r = await api(`/api/tidy/browse?${new URLSearchParams({ folder: TU.folder, q: TU.q })}`); } catch (e) { return fail(e); }
+  TU.photos = r.photos; TU.folders = r.folders; TU.settings = r.settings; TU.albums = r.albums;
+  r.photos.forEach(p => (TU.info[p.id] = p));
+  $("#tu-format").value = r.settings.time === "0" ? "0" : "1";
+  $("#tu-folders").value = r.settings.folders || "month_group";
+  $("#tu-folders-note").textContent = TU_FOLDER_NOTE[r.settings.folders || "month_group"] + " The same setting is used when you import.";
+  $("#org-hl").value = r.settings.highlights || "5";
+  $("#org-hl-note").textContent = r.settings.highlights === "off" ? "No Highlights folders are made."
+    : `A "2025 Highlights" folder holds a copy of every ${r.settings.highlights === "4" ? "4- and 5-star" : "5-star"} photo from that year. The originals stay where they are.`;
+  $("#btn-hl").hidden = r.settings.highlights === "off";
+  const cur = $("#tu-album").value;
+  $("#tu-album").innerHTML = `<option value="">— none —</option>` + r.albums.map(a => `<option value="${esc(a.key)}">${esc(a.start.slice(0, 7).replace("-", "."))} ${esc(a.name)}</option>`).join("");
+  $("#tu-album").value = cur;
+  $("#pp-albums").innerHTML = [...new Set(r.albums.map(a => a.name))].map(n => `<option value="${esc(n)}">`).join("");
+  try { const o = await api("/api/organize"); $("#btn-undo").hidden = !o.can_undo; } catch (e) { /* ignore */ }
+  renderTidy();
+}
+
+function tuCrumbs() {
+  const parts = TU.folder ? TU.folder.split("/") : [];
+  const lib = (S.state.library || "").split("/").filter(Boolean).pop() || "Library";
+  let html = `<button data-f="">${esc(lib)}</button>`;
+  parts.forEach((p, i) => { html += `<i>›</i><button data-f="${esc(parts.slice(0, i + 1).join("/"))}">${esc(p)}</button>`; });
+  if (TU.q) html += `<i>›</i><span>Search: “${esc(TU.q)}”</span>`;
+  $("#tu-crumbs").innerHTML = html;
+}
+
+function tuShown() {
+  return TU.photos.filter(p => !TU.filter || (TU.filter === "sel" ? TU.sel.has(p.id) : tuEdited(p.id)));
+}
+const tuEdited = (id) => TU.names[id] !== undefined || (TU.sel.has(id) && (tuShift() || TU.place || $("#tu-name-all").value.trim() || $("#tu-album").value || $("#tu-tags").value.trim()));
+
+function renderTidy() {
+  tuCrumbs();
+  const parts = TU.folder ? TU.folder.split("/") : [];
+  $("#tu-folder-title").textContent = TU.q ? "Search results" : (parts.length ? parts[parts.length - 1] : "Library");
+  const selHere = TU.photos.filter(p => TU.sel.has(p.id)).length;
+  $("#tu-folder-sub").textContent = `${plural(TU.photos.length, "photo")}${TU.folders.length ? " · " + plural(TU.folders.length, "folder") : ""} · ${n(TU.sel.size)} selected` +
+    (TU.photos.length && TU.photos.every(p => p.tidy) ? " · all already tidy" : "");
+  $$("#tu-filter button").forEach(b => {
+    const k = b.dataset.k;
+    const c = k === "sel" ? TU.sel.size : k === "edit" ? TU.photos.filter(p => tuEdited(p.id)).length : TU.photos.length;
+    b.textContent = `${k === "sel" ? "Selected" : k === "edit" ? "Edited" : "All"} (${n(c)})`;
+  });
+  $("#tu-all").checked = TU.photos.length > 0 && selHere === TU.photos.length;
+  $("#tu-folder-cards").hidden = !!TU.q || !TU.folders.length;
+  $("#tu-folder-cards").innerHTML = TU.folders.map(f => `
+    <button class="fcard" data-f="${esc(f.path)}">
+      <span class="fimg">${f.cover ? `<img loading="lazy" src="/thumb/${f.cover}" alt="">` : ""}</span>
+      <span class="fname2"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>${esc(f.name)}</span>
+      <span class="muted small">${plural(f.count, "photo")}</span>
+    </button>`).join("");
+  const list = tuShown();
+  $("#tu-none").hidden = list.length > 0 || TU.folders.length > 0;
+  $("#tu-grid").innerHTML = list.map(p => {
+    const on = TU.sel.has(p.id);
+    const v = TU.pv[p.id] || p;
+    const np = TU.names[p.id] !== undefined ? TU.names[p.id] : v.np;
+    const same = !TU.pv[p.id] && p.tidy && TU.names[p.id] === undefined;
+    return `<div class="tcard ${on ? "on" : ""}" data-id="${p.id}">
+      <div class="ph"><img loading="lazy" src="/thumb/${p.id}" alt=""><span class="tick" data-sel>${on ? "✓" : ""}</span>
+        ${p.raw ? `<span class="tagr">RAW+JPEG</span>` : p.kind === "video" ? `<span class="tagr">Video</span>` : ""}</div>
+      <div class="oldn" title="${esc(p.path)}">${esc(p.name)}</div>
+      ${p.needs ? `<div class="note">Needs a date first — add one in Drive Preview</div>`
+        : `<div class="fname ${TU.names[p.id] !== undefined ? "mine" : ""} ${same ? "same" : ""}" title="${same ? "Already has the Picture Perfect name" : esc((v.folder_new || "").split("/").join(" › "))}"><span>${esc(v.prefix)}</span><input data-name value="${esc(np)}" spellcheck="false">${v.suffix ? `<span class="num">${esc(v.suffix)}</span>` : ""}<span>${esc(v.ext)}</span></div>`}
+    </div>`;
+  }).join("");
+  renderTidyPanel();
+}
+
+function tuBaseWhen() {   // the earliest selected photo, before any change
+  const t = [...TU.sel].map(id => TU.info[id]).filter(p => p && !p.needs).map(p => p.taken).sort();
+  return t[0] || null;
+}
+function tuShift() {
+  const base = tuBaseWhen(), v = $("#tu-when").value;
+  if (!base || !v || v === base.slice(0, 16)) return 0;
+  return Math.round((isoToMs(v + ":00") - isoToMs(base)) / 1000);
+}
+
+function renderTidyPanel() {
+  const k = TU.sel.size;
+  $("#tu-empty").hidden = k > 0;
+  $("#tu-edit").hidden = k === 0;
+  $("#tu-title").textContent = k ? `Tidy Up ${plural(k, "Photo")}` : "Tidy Up";
+  $("#tu-sub").textContent = k ? "Make changes to names, dates, places and keywords. Nothing happens until you press Save Changes."
+    : "Select photos on the right, then rename them, fix dates and places, and file them.";
+  $("#tu-save").disabled = !k;
+  $("#tu-save").textContent = k ? `Save Changes (${n(k)})` : "Save Changes";
+  $$("#tu-tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === TU.tab));
+  $$("#tu-edit [data-pane]").forEach(p => (p.hidden = p.dataset.pane !== TU.tab));
+  const base = tuBaseWhen();
+  if (!$("#tu-when").value && base) $("#tu-when").value = base.slice(0, 16);
+  const sh = tuShift();
+  $("#tu-when-note").textContent = !base ? "None of the selected photos have a date yet."
+    : sh ? `Every selected photo moves by ${fmtShift(sh)}, keeping its order.` : "Change it to fix a camera clock — every selected photo moves by the same amount.";
+  $("#tu-place").textContent = TU.place ? "📍 " + shortPlace(TU.place.label || placeName(TU.place)) : "+ Add a place";
+  $("#tu-place-clear").hidden = !TU.place;
+  const withGps = [...TU.sel].filter(id => TU.info[id] && TU.info[id].lat != null).length;
+  $("#tu-place-note").textContent = TU.place
+    ? ($("#tu-place-all").checked ? `Goes on all ${plural(k, "photo")}.` : `Goes on ${plural(k - withGps, "photo")} without a location.${withGps ? ` ${plural(withGps, "photo")} with GPS keep${withGps === 1 ? "s" : ""} ${withGps === 1 ? "its" : "their"} own.` : ""}`)
+    : "Search for a place or drop a pin on the map.";
+  // preview
+  const L2 = TU.pvList;
+  const changing = L2.filter(x => x.changes).length;
+  $("#tu-prev-head").textContent = `Preview (${plural(L2.length, "file")}${L2.length && changing < L2.length ? `, ${n(L2.length - changing)} unchanged` : ""})`;
+  const show = TU.showAll ? L2 : L2.slice(0, 8);
+  $("#tu-preview").innerHTML = (show.map(x => `
+    <div class="pvrow ${x.changes ? "" : "same"}"><img src="/thumb/${x.id}" alt="">
+      <span class="o" title="${esc(x.old)}">${esc(fileOf(x.old))}</span><span class="a">→</span>
+      <span class="nw" title="${esc(x.new)}">${esc(fileOf(x.new))}</span></div>`).join("") || `<div class="hint">Working it out…</div>`) +
+    (TU.waiting ? `<div class="hint warnrow">${plural(TU.waiting, "photo")} without a date will be left as they are.</div>` : "");
+  $("#tu-prev-more").hidden = L2.length <= 8;
+  $("#tu-prev-more").textContent = TU.showAll ? "Show fewer" : `Show all ${n(L2.length)} files…`;
+}
+
+let tuTimer;
+function tuPayload() {
+  const nameAll = $("#tu-name-all").value.trim();
+  const names = {};
+  Object.entries(TU.names).forEach(([id, v]) => { if (TU.sel.has(+id)) names[id] = v; });
+  const al = $("#tu-album").value;
+  const alb = al ? TU.albums.find(a => a.key === al) : null;
+  return { ids: [...TU.sel], title: alb ? alb.name : (nameAll || null), names, shift: tuShift(), place: TU.place,
+           replace_place: $("#tu-place-all").checked, tags: $("#tu-tags").value.split(",").map(t => t.trim()).filter(Boolean),
+           album: al || null };
+}
+function tuRefresh() {
+  renderTidyPanel();
+  clearTimeout(tuTimer);
+  if (!TU.sel.size) { TU.pv = {}; TU.pvList = []; TU.waiting = 0; return renderTidy(); }
+  tuTimer = setTimeout(async () => {
+    try {
+      const r = await api("/api/tidy/preview", tuPayload());
+      TU.pv = {}; r.items.forEach(x => (TU.pv[x.id] = x));
+      TU.pvList = r.items; TU.waiting = r.waiting;
+      const y = window.scrollY;
+      const focused = document.activeElement && document.activeElement.matches("#tu-grid [data-name]") ? +document.activeElement.closest(".tcard").dataset.id : null;
+      if (focused === null) renderTidy(); else renderTidyPanel();
+      window.scrollTo(0, y);
+    } catch (e) { fail(e); }
+  }, 250);
+}
+function tuReset() {
+  TU.sel = new Set(); TU.names = {}; TU.pv = {}; TU.pvList = []; TU.place = null; TU.showAll = false;
+  $("#tu-name-all").value = ""; $("#tu-when").value = ""; $("#tu-tags").value = ""; $("#tu-album").value = ""; $("#tu-place-all").checked = false;
+}
+
+$("#tu-crumbs").onclick = (e) => { const b = e.target.closest("[data-f]"); if (!b) return; TU.folder = b.dataset.f; TU.q = ""; $("#tu-q").value = ""; loadTidy(); };
+$("#tu-folder-cards").onclick = (e) => { const b = e.target.closest(".fcard"); if (!b) return; TU.folder = b.dataset.f; loadTidy(); window.scrollTo(0, 0); };
+let tuQTimer;
+$("#tu-q").addEventListener("input", (e) => { clearTimeout(tuQTimer); tuQTimer = setTimeout(() => { TU.q = e.target.value.trim(); loadTidy(); }, 350); });
+$("#tu-filter").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; TU.filter = b.dataset.k;
+  $$("#tu-filter button").forEach(x => x.classList.toggle("on", x === b)); renderTidy(); };
+$("#tu-all").onchange = (e) => { TU.photos.filter(p => !p.needs).forEach(p => (e.target.checked ? TU.sel.add(p.id) : TU.sel.delete(p.id))); $("#tu-when").value = ""; renderTidy(); tuRefresh(); };
+$("#tu-grid").addEventListener("click", (e) => {
+  const c = e.target.closest(".tcard"); if (!c) return;
+  const id = +c.dataset.id;
+  if (e.target.matches("input")) return;
+  if (TU.info[id] && TU.info[id].needs) return;
+  TU.sel.has(id) ? TU.sel.delete(id) : TU.sel.add(id);
+  $("#tu-when").value = "";
+  renderTidy(); tuRefresh();
+});
+$("#tu-grid").addEventListener("change", (e) => {
+  if (!e.target.matches("[data-name]")) return;
+  const id = +e.target.closest(".tcard").dataset.id;
+  const p = TU.info[id];
+  const v = e.target.value.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+  if (v === (p.np || "") && !TU.sel.has(id)) delete TU.names[id]; else TU.names[id] = v;
+  TU.sel.add(id);
+  renderTidy(); tuRefresh();
+});
+$("#tu-grid").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches("input")) e.target.blur(); });
+$("#tu-tabs").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; TU.tab = b.dataset.t; renderTidyPanel(); };
+["#tu-name-all", "#tu-when", "#tu-tags"].forEach(sel => $(sel).addEventListener("input", tuRefresh));
+["#tu-album", "#tu-place-all"].forEach(sel => $(sel).addEventListener("change", tuRefresh));
+$("#tu-place").onclick = () => openPicker([], "Location for the selected photos", null, TU.place ? TU.place.label : "", (c) => { TU.place = c; tuRefresh(); });
+$("#tu-place-clear").onclick = () => { TU.place = null; tuRefresh(); };
+$("#tu-prev-more").onclick = () => { TU.showAll = !TU.showAll; renderTidyPanel(); };
+$("#tu-format").onchange = async (e) => { try { await api("/api/organize/settings", { time: e.target.value }); await loadTidy(); tuRefresh(); } catch (err) { fail(err); } };
+$("#tu-folders").onchange = async (e) => { try { await api("/api/organize/settings", { folders: e.target.value }); await loadTidy(); tuRefresh(); } catch (err) { fail(err); } };
+$("#org-hl").onchange = async (e) => { try { await api("/api/organize/settings", { highlights: e.target.value }); loadTidy(); } catch (err) { fail(err); } };
+$("#btn-hl").onclick = () => api("/api/highlights", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
 $("#btn-undo").onclick = () => {
-  if (!confirm("Put the files from the last organize back to their old names and folders?")) return;
+  if (!confirm("Put the photos from the last save back to their old names and folders?")) return;
   api("/api/organize/undo", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+$("#tu-cancel").onclick = () => { tuReset(); renderTidy(); };
+$("#tu-save").onclick = () => {
+  const p = tuPayload();
+  if (!p.ids.length) return;
+  const moving = TU.pvList.filter(x => x.changes).length;
+  if (!confirm(`Rename, move and update ${plural(p.ids.length, "photo")} on your drive${moving < p.ids.length ? ` (${n(p.ids.length - moving)} keep their name)` : ""}? You can undo the renaming afterwards.`)) return;
+  api("/api/tidy/save", p).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
 };
 
 /* ------------------------------------------------------------------ inbox / edit photos */

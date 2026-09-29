@@ -474,6 +474,33 @@ def organize_plan():
     return jsonify(lib().plan_summary(offset=int(request.args.get("offset", 0))))
 
 
+@app.route("/api/tidy/browse")
+def tidy_browse():
+    a = request.args
+    return jsonify(lib().tidy_browse(a.get("folder", ""), a.get("q", "").strip()))
+
+
+def _tidy_args(b):
+    return dict(title=b.get("title"), names=b.get("names"), shift=int(b.get("shift") or 0),
+                place=b.get("place"), replace_place=bool(b.get("replace_place")))
+
+
+@app.route("/api/tidy/preview", methods=["POST"])
+def tidy_preview():
+    b = request.json or {}
+    return jsonify(lib().tidy_preview(b.get("ids", []), **_tidy_args(b)))
+
+
+@app.route("/api/tidy/save", methods=["POST"])
+def tidy_save():
+    l = lib()
+    b = request.json or {}
+    ids, extra = b.get("ids", []), _tidy_args(b)
+    l.start_job("Tidying up %d photos" % len(ids),
+                lambda job: l.tidy_save(job, ids, tags=b.get("tags"), album=b.get("album"), **extra))
+    return jsonify({"ok": True})
+
+
 @app.route("/api/organize/group-ids")
 def organize_group_ids():
     folder = request.args.get("folder", "")

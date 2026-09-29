@@ -396,9 +396,11 @@ async function showImport(r) {
   $("#im-event").value = "";
   $("#im-format").value = IM.settings.time === "0" ? "0" : "1";
   const dated = IM.items.filter(i => i.taken).map(i => i.taken).sort();
-  IM.base = dated.length ? dated[0].slice(0, 10) : null;
-  $("#im-date").value = IM.base || "";
-  $("#im-date").disabled = !IM.base;
+  IM.base = dated.length ? dated[0].slice(0, 16) : null;
+  $("#im-date").value = IM.base ? IM.base.slice(0, 10) : "";
+  $("#im-time").value = IM.base ? IM.base.slice(11, 16) : "";
+  $("#im-date").disabled = $("#im-time").disabled = !IM.base;
+  $("#im-tags").value = "";
   $("#op-album-sel").innerHTML = `<option value="">Choose an album…</option>` +
     IM.albums.map(a => `<option value="${esc(a.key)}">${esc(a.start.slice(0, 7).replace("-", "."))} ${esc(a.name)}</option>`).join("");
   $("#pp-albums").innerHTML = [...new Set(IM.albums.map(a => a.name))].map(n => `<option value="${esc(n)}">`).join("");
@@ -415,10 +417,16 @@ async function showImport(r) {
   renderImport();
 }
 
+function imBatchTags() {
+  return $("#im-tags").value.split(",").map(x => x.trim()).filter(Boolean);
+}
 function imShift() {
-  const v = $("#im-date").value;
-  if (!IM.base || !v || v === IM.base) return 0;
-  return Math.round((isoToMs(v + "T00:00:00") - isoToMs(IM.base + "T00:00:00")) / 1000);
+  if (!IM.base) return 0;
+  const d = $("#im-date").value, t = $("#im-time").value || IM.base.slice(11, 16);
+  if (!d) return 0;
+  const v = d + "T" + t;
+  if (v === IM.base) return 0;
+  return Math.round((isoToMs(v + ":00") - isoToMs(IM.base + ":00")) / 1000);
 }
 function shiftIso(iso, sec) {
   if (!sec) return iso;
@@ -571,8 +579,8 @@ function renderImport() {
   const first = sel.find(i => imTaken(i)) || IM.items.find(i => imTaken(i));
   $("#im-preview").textContent = first ? imFinalName(first) : "—";
   const sh = imShift();
-  $("#im-date-note").textContent = sh ? `Every photo moves by ${fmtShift(sh)}, keeping its time of day.` :
-    (IM.base ? "Change it to fix a camera clock — every photo moves by the same amount." : "No dates found in these photos.");
+  $("#im-date-note").textContent = sh ? `Every photo moves by ${fmtShift(sh)}, keeping its order.` :
+    (IM.base ? "Change the date or time to fix a camera clock — every photo moves by the same amount." : "No dates found in these photos.");
   $("#im-place").textContent = IM.bplace ? "📍 " + shortPlace(IM.bplace.label || placeName(IM.bplace)) : "+ Add a place";
   $("#im-place-clear").hidden = !IM.bplace;
   const withGps = sel.filter(i => i.place).length;
@@ -760,7 +768,7 @@ $("#im-view").onclick = (e) => { const b = e.target.closest("button"); if (!b) r
 $("#im-search-btn").onclick = () => { const s2 = $("#im-search"); s2.hidden = !s2.hidden; if (!s2.hidden) s2.focus(); else { s2.value = ""; IM.q = ""; renderImport(); } };
 $("#im-search").addEventListener("input", (e) => { IM.q = e.target.value.trim(); IM.shown = 120; renderImport(); });
 $("#im-more").onclick = () => { IM.shown += 120; renderImport(); };
-["#im-event", "#im-date", "#im-format"].forEach(sel => $(sel).addEventListener("input", renderImport));
+["#im-event", "#im-date", "#im-time", "#im-format"].forEach(sel => $(sel).addEventListener("input", renderImport));
 $("#im-place").onclick = () => openPicker([], "Location for these photos", null, IM.bplace ? IM.bplace.label : $("#im-event").value.trim(),
   (c) => { IM.bplace = c; renderImport(); });
 $("#im-place-clear").onclick = () => { IM.bplace = null; renderImport(); };
@@ -785,9 +793,11 @@ $("#im-go").onclick = () => {
   if ($("#op-delete").checked && !confirm(`After copying, move the ${plural(include.length, "original")} to the Trash? You can Put Back from the Trash until you empty it.`)) return;
   const al = albumChosen();
   const pick = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => IM.sel.has(+k)));
+  const bt = imBatchTags(), tags = pick(IM.tags);
+  if (bt.length) include.forEach(i => { tags[i] = [...new Set([...(tags[i] || []), ...bt])]; });
   api("/api/import/commit", {
     include, event: al ? "" : $("#im-event").value.trim(), shift: imShift(), album: al ? al.key : null,
-    names: pick(IM.over), times: pick(IM.times), tags: pick(IM.tags), ratings: pick(IM.stars),
+    names: pick(IM.over), times: pick(IM.times), tags, ratings: pick(IM.stars),
     places: pick(IM.places), batch_place: IM.bplace,
     rename: $("#op-rename").checked, delete_source: $("#op-delete").checked,
   }).then(() => { importScreen("running"); S.lastJobFinished = false; refreshState(); }).catch(fail);

@@ -746,3 +746,10 @@ main { padding: 28px 34px; }
 .tcard .fname.same { background: var(--bg); }
 .tcard .note { font-size: 12px; color: var(--warn); }
 @media (max-width: 1250px) { .tu { grid-template-columns: 310px minmax(0, 1fr); } .searchbox2 { min-width: 220px; } }
+
+.dtrow { display: flex; gap: 8px; }
+.dtrow input[type=date] { flex: 3; min-width: 0; }
+.dtrow input[type=time] { flex: 2; min-width: 0; }
+.flsub { color: var(--muted); font-weight: 400; font-size: 12px; }
+#im-adv .opt { flex-wrap: nowrap; align-items: flex-start; }
+#im-adv .opt input[type=checkbox] { flex: none; margin-top: 1px; }

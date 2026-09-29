@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picture Perfect</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span>Picture Perfect</span>
+  </div>
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="inbox">Drive Preview <span class="badge" id="b-inbox"></span></button>
+    <button data-tab="browse" class="on">Browse</button>
+    <button data-tab="dupes">Duplicates <span class="badge" id="b-dupes"></span></button>
+    <button data-tab="pick">Prune</button>
+    <button data-tab="people">People <span class="badge" id="b-people"></span></button>
+    <button data-tab="locations">Locations <span class="badge" id="b-loc"></span></button>
+    <button data-tab="organize">Organize</button>
+  </nav>
+  <div class="top-actions" id="top-actions" hidden>
+    <button class="ghost" id="btn-import" title="Copy new photos in from a card, phone export or download">Add photos…</button>
+    <button class="ghost" id="btn-scan" title="Look for changes on the drive">Rescan</button>
+    <button class="lib" id="btn-lib" title="Change photo folder"></button>
+  </div>
+</header>
+
+<div id="job" class="job" hidden>
+  <div class="job-text"><strong id="job-name"></strong> <span id="job-phase"></span> <span id="job-msg" class="muted"></span></div>
+  <div class="bar"><div id="job-bar"></div></div>
+  <button class="link" id="job-close" hidden>Dismiss</button>
+</div>
+
+<main>
+  <!-- Setup -->
+  <section id="v-setup" class="view setup" hidden>
+    <div class="setup-card">
+      <h1>Let's find your photos</h1>
+      <p>Choose the folder on your drive that holds your photos. Everything stays on your computer.</p>
+      <p class="warn" id="setup-error" hidden></p>
+      <button class="primary big" id="btn-pick">Choose folder…</button>
+      <div class="or">or type the path</div>
+      <form id="path-form" class="row">
+        <input id="path-input" placeholder="/Volumes/Photos Drive/Photos" autocomplete="off">
+        <button class="ghost">Open</button>
+      </form>
+      <div id="recent" class="recent"></div>
+      <p class="warn" id="exiftool-warn" hidden>ExifTool isn't set up yet. Close this window and start the app with <b>Start Picture Perfect</b> so it can install it.</p>
+    </div>
+  </section>
+
+  <!-- Browse -->
+  <section id="v-browse" class="view" hidden>
+    <div class="callout" id="browse-unorg" hidden>
+      <div id="browse-unorg-text"></div>
+      <button class="primary" id="browse-unorg-go">See the new names</button>
+    </div>
+    <div class="filters">
+      <label class="field grow"><span>Place</span>
+        <input id="f-place" list="places" placeholder="Any place" autocomplete="off">
+        <datalist id="places"></datalist>
+      </label>
+      <label class="field"><span>Year</span>
+        <select id="f-year"><option value="">Any year</option></select>
+      </label>
+      <label class="field" id="f-month-wrap" hidden><span>Month</span>
+        <select id="f-month"><option value="">Any month</option></select>
+      </label>
+      <label class="field"><span>Rating</span>
+        <select id="f-rating"><option value="">Any</option><option value="5">★★★★★</option><option value="4">★★★★ and up</option><option value="3">★★★ and up</option><option value="1">Any stars</option></select>
+      </label>
+      <label class="field grow"><span>Name or tag</span>
+        <input id="f-name" list="tag-list" placeholder="e.g. Xmas or Hugh" autocomplete="off">
+      </label>
+      <button class="link" id="f-clear">Clear</button>
+    </div>
+    <div class="count-row"><span class="count" id="browse-count"></span>
+      <span><button class="ghost" id="browse-pick" hidden>Prune</button>
+      <button class="ghost" id="browse-edit" hidden>Edit these photos</button></span></div>
+    <div id="grid"></div>
+    <div class="more"><button class="ghost" id="browse-more" hidden>Show more</button></div>
+    <div class="empty" id="browse-empty" hidden>No photos match.</div>
+  </section>
+
+  <!-- Check before importing -->
+  <section id="v-import" class="view narrow" hidden>
+    <div class="head">
+      <div>
+        <div class="steps"><span class="on">1 · Check</span><span>2 · Preview names</span><span>3 · Save &amp; file</span></div>
+        <h2>Add photos</h2>
+        <p class="muted" id="im-sub"></p>
+      </div>
+      <button class="primary big" id="im-go-top"></button>
+    </div>
+    <div class="stats" id="im-stats"></div>
+    <div id="im-similar-wrap" hidden>
+      <h3 class="sec">Photos you may already have</h3>
+      <p class="hint">Each new photo is shown next to the one it matches. They're left out unless you choose <b>Import anyway</b>.</p>
+      <div class="seg" id="im-seg" style="margin-bottom:12px">
+        <button data-k="" class="on">All</button>
+        <button data-k="exact">Exact copies</button>
+        <button data-k="similar">Look-alikes</button>
+        <button data-k="repeat">Repeats in this folder</button>
+      </div>
+      <div id="im-similar"></div>
+    </div>
+    <div id="im-new-wrap" hidden>
+      <h3 class="sec">New to your library <span class="muted small" id="im-new-n"></span></h3>
+      <div class="tiles small" id="im-new"></div>
+    </div>
+    <div class="im-bar">
+      <button class="link" id="im-cancel">Cancel</button>
+      <button class="primary big" id="im-go"></button>
+    </div>
+  </section>
+
+  <!-- Drive Preview / edit photos -->
+  <section id="v-inbox" class="view narrow" hidden>
+    <div class="head">
+      <div>
+        <button class="link back" id="rv-back" hidden>‹ Back to Browse</button>
+        <div class="steps" id="rv-steps"><span>1 · Check</span><span class="on">2 · Preview names</span><span>3 · Save &amp; file</span></div>
+        <h2 id="rv-title">Drive Preview</h2>
+        <p class="muted" id="rv-sub"></p>
+      </div>
+      <button class="primary big" id="rv-save" hidden>Save &amp; file</button>
+    </div>
+    <div class="bulk" id="rv-bulk" hidden>
+      <label class="check"><input type="checkbox" id="rv-all" checked> <span id="rv-count"></span></label>
+      <div class="bulk-btns">
+        <button class="ghost" data-bulk="name">Name…</button>
+        <button class="ghost" data-bulk="date">Date &amp; time…</button>
+        <button class="ghost" data-bulk="place">Place…</button>
+        <button class="ghost" data-bulk="tag">Tag…</button>
+        <button class="ghost" data-bulk="group">Add to group…</button>
+      </div>
+    </div>
+    <div id="rv-list"></div>
+    <div class="callout" id="rv-prune" hidden>
+      <div id="rv-prune-text"></div>
+      <button class="primary" id="rv-prune-go">Prune these photos</button>
+    </div>
+    <div class="empty" id="rv-empty" hidden><div class="big-check">✓</div>You're all caught up.<br><span class="small">New photos land here when you use <b>Add photos…</b> or when a rescan finds new ones.</span></div>
+    <div class="foot" id="rv-foot" hidden><button class="link" id="rv-later">Mark as reviewed without renaming</button></div>
+  </section>
+
+  <!-- Prune -->
+  <section id="v-pick" class="view narrow" hidden>
+    <div class="head">
+      <div>
+        <button class="link back" id="pk2-back" hidden>‹ All folders</button>
+        <h2 id="pk2-title">Prune</h2>
+        <p class="muted" id="pk2-sub"></p>
+      </div>
+      <button class="primary big" id="pk2-done" hidden></button>
+    </div>
+    <div id="pk2-groups-wrap">
+      <input id="pk2-q" placeholder="Search your folders — e.g. Spain" autocomplete="off" style="margin-bottom:12px">
+      <div id="pk2-groups" class="gp-list" style="max-height:none"></div>
+      <p class="hint" style="margin-top:14px">Or choose photos any way you like in <b>Browse</b> (a month, a place, a rating) and click <b>Prune</b> there.</p>
+    </div>
+    <div id="pk2-set" hidden>
+      <div class="stats" id="pk2-stats"></div>
+      <p class="hint">Photos that look blurry, too dark, overexposed, or are weaker shots of the same moment are marked <b>Delete</b>. Click the label to change it, or click a photo to see it large and use <b>K</b> keep, <b>D</b> delete, <b>1–5</b> stars, arrows to move.</p>
+      <div class="pick-tools">
+        <button class="link" id="pk2-keep-all">Keep all</button>
+        <button class="link" id="pk2-reset">Back to suggestions</button>
+        <div class="seg" id="pk2-sort"><button data-v="time" class="on">In order taken</button><button data-v="fav">Likely favorites first</button></div>
+        <span class="muted small" id="pk2-taste"></span>
+      </div>
+      <div class="picks" id="pk2-list"></div>
+      <p class="hint" style="margin-top:16px">Deleted photos go to the Mac <b>Trash</b>, so you can still get one back with <b>Put Back</b> until you empty the Trash.</p>
+    </div>
+  </section>
+
+  <!-- People -->
+  <section id="v-people" class="view narrow" hidden>
+    <div id="pp-main">
+      <div class="head">
+        <div>
+          <h2>People</h2>
+          <p class="muted" id="pp-sub"></p>
+        </div>
+        <button class="ghost" id="pp-scan" hidden>Look for new faces</button>
+      </div>
+      <div class="callout" id="pp-setup" hidden>
+        <div><b>Recognize faces</b><br><span class="small">I'll find the faces in your photos and group the ones that look like the same person. You name each group once, and every photo of them gets tagged. Everything stays on this Mac. It needs a one-time download of about 15 MB, and the first pass over a big library can take a few hours — it runs in the background.</span></div>
+        <button class="primary" id="pp-setup-go">Set up</button>
+      </div>
+      <div id="pp-check-wrap" hidden>
+        <h3 class="sec">To check</h3>
+        <div id="pp-check" class="pp-row"></div>
+      </div>
+      <div id="pp-people-wrap" hidden>
+        <h3 class="sec">People</h3>
+        <div id="pp-people" class="pp-people"></div>
+      </div>
+      <div id="pp-groups-wrap" hidden>
+        <h3 class="sec">Who is this?</h3>
+        <p class="hint">Faces that look like the same person. Type a name to tag them all — use a name you've used before to add them to that person. <b>Check faces</b> lets you untick any that don't belong first.</p>
+        <div id="pp-groups"></div>
+        <p class="muted small" id="pp-singles"></p>
+      </div>
+    </div>
+    <div id="pp-detail" hidden>
+      <div class="head">
+        <div>
+          <button class="link back" id="pp-back">‹ People</button>
+          <h2 id="pp-d-title"></h2>
+          <p class="muted" id="pp-d-sub"></p>
+        </div>
+        <div class="pp-d-actions" id="pp-d-actions"></div>
+      </div>
+      <div id="pp-d-grid" class="faces-grid"></div>
+    </div>
+  </section>
+
+  <!-- Duplicates -->
+  <section id="v-dupes" class="view narrow" hidden>
+    <div class="head">
+      <div>
+        <h2>Duplicates</h2>
+        <p class="muted" id="dupes-sub"></p>
+      </div>
+      <div class="seg" id="dupes-seg">
+        <button data-k="" class="on">All</button>
+        <button data-k="exact">Exact copies</button>
+        <button data-k="similar">Look-alikes</button>
+      </div>
+    </div>
+    <div class="callout" id="dupes-auto" hidden>
+      <div><strong id="dupes-auto-n"></strong> are byte-for-byte identical. I can keep the best-named copy of each and set the rest aside for you.</div>
+      <button class="primary" id="btn-auto">Handle exact copies</button>
+    </div>
+    <p class="hint">Click a photo to switch between <b>Keep</b> and <b>Set aside</b>. Set-aside photos move to a <b>_Set aside</b> folder on the drive — nothing is deleted.</p>
+    <div id="dupe-list"></div>
+    <div class="empty" id="dupes-empty" hidden><div class="big-check">✓</div>No duplicates to review.</div>
+    <div class="foot" id="aside-foot" hidden>
+      <span id="aside-n"></span>
+      <button class="link" id="btn-restore">Put them all back</button>
+    </div>
+  </section>
+
+  <!-- Locations -->
+  <section id="v-locations" class="view narrow" hidden>
+    <div class="head">
+      <div>
+        <h2>Locations</h2>
+        <p class="muted" id="loc-sub"></p>
+      </div>
+      <button class="primary" id="btn-accept-all" hidden>Use all suggestions</button>
+    </div>
+    <div id="loc-list"></div>
+    <div class="more"><button class="ghost" id="loc-more" hidden>Show more days</button></div>
+    <div class="empty" id="loc-empty" hidden><div class="big-check">✓</div>Every photo has a location.</div>
+  </section>
+
+  <!-- Organize -->
+  <section id="v-organize" class="view narrow" hidden>
+    <div class="head">
+      <div>
+        <h2>Organize</h2>
+        <p class="muted">Renames and files your photos. Nothing changes until you press Apply.</p>
+      </div>
+    </div>
+    <div class="settings">
+      <div class="setting">
+        <span>Folders</span>
+        <div class="seg" id="set-folders">
+          <button data-v="month_group">Month › Trip</button>
+          <button data-v="year_month">Year › Month</button>
+          <button data-v="year">Year</button>
+          <button data-v="none">No folders</button>
+        </div>
+      </div>
+      <div class="setting">
+        <span>Time in name</span>
+        <div class="seg" id="set-time">
+          <button data-v="1">Yes</button>
+          <button data-v="0">No</button>
+        </div>
+      </div>
+      <div class="setting">
+        <span>Highlights</span>
+        <div class="seg" id="set-highlights">
+          <button data-v="5">★★★★★</button>
+          <button data-v="4">★★★★ and up</button>
+          <button data-v="off">Off</button>
+        </div>
+      </div>
+      <div class="example"><span class="muted">Example</span> <code id="org-example"></code></div>
+      <div class="example" id="org-hl-note" style="border-top:0;padding-top:0"></div>
+    </div>
+    <div class="callout soft" id="org-dupes-note" hidden></div>
+    <div class="stats" id="org-stats"></div>
+    <div class="apply-row">
+      <button class="primary big" id="btn-apply" disabled>Apply changes</button>
+      <button class="link" id="btn-undo" hidden>Undo last organize</button>
+      <button class="link" id="btn-hl">Update highlights now</button>
+    </div>
+    <div id="org-list" class="changes"></div>
+  </section>
+</main>
+
+<!-- Photo viewer -->
+<div id="viewer" class="viewer" hidden>
+  <button class="x" id="v-close" aria-label="Close">×</button>
+  <button class="nav prev" id="v-prev" aria-label="Previous">‹</button>
+  <div class="stage" id="v-stage"></div>
+  <button class="nav next" id="v-next" aria-label="Next">›</button>
+  <aside class="info" id="v-info"></aside>
+</div>
+
+<!-- Place picker -->
+<div id="picker" class="modal" hidden>
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3 id="pk-title">Choose a place</h3>
+      <button class="x small" id="pk-close" aria-label="Close">×</button>
+    </div>
+    <input id="pk-q" placeholder="Search a place — e.g. Tyrrel Bay, Carriacou" autocomplete="off">
+    <div class="pk-body">
+      <div id="pk-results" class="pk-results"></div>
+      <div id="pk-map" class="pk-map"></div>
+    </div>
+    <p class="muted small">Pick a result, or click the map to drop the pin exactly.</p>
+    <div class="sheet-foot">
+      <span id="pk-chosen" class="muted"></span>
+      <button class="primary" id="pk-save" disabled>Save location</button>
+    </div>
+  </div>
+</div>
+
+<!-- Name a day -->
+<div id="namer" class="modal" hidden>
+  <div class="sheet small-sheet">
+    <div class="sheet-head">
+      <h3 id="nm-title">Name this day</h3>
+      <button class="x small" id="nm-close" aria-label="Close">×</button>
+    </div>
+    <p class="muted">Location and event, like <i>St. Barts Xmas NYE</i>. Every photo from this day gets it.</p>
+    <input id="nm-input" autocomplete="off">
+    <p class="small muted">Preview: <code id="nm-preview"></code></p>
+    <div class="sheet-foot">
+      <span></span>
+      <button class="primary" id="nm-save">Save name</button>
+    </div>
+  </div>
+</div>
+
+<!-- Big view for choosing -->
+<div id="cull" class="viewer cull" hidden>
+  <button class="x" id="cu-close" aria-label="Close">×</button>
+  <button class="nav prev" id="cu-prev" aria-label="Previous">‹</button>
+  <div class="stage" id="cu-stage"></div>
+  <button class="nav next" id="cu-next" aria-label="Next">›</button>
+  <div class="cull-bar">
+    <div class="cull-info"><b id="cu-name"></b><span id="cu-why" class="muted"></span></div>
+    <div class="cull-actions">
+      <button class="ghost" id="cu-skip">Delete <kbd>D</kbd></button>
+      <button class="primary" id="cu-keep">Keep <kbd>K</kbd></button>
+      <span class="stars big" id="cu-stars"></span>
+    </div>
+    <div class="muted small" id="cu-count"></div>
+  </div>
+</div>
+
+<!-- Bulk edit -->
+<div id="bulk" class="modal" hidden>
+  <div class="sheet small-sheet">
+    <div class="sheet-head">
+      <h3 id="bk-title"></h3>
+      <button class="x small" id="bk-close" aria-label="Close">×</button>
+    </div>
+    <div id="bk-body"></div>
+    <div class="sheet-foot">
+      <span class="muted small" id="bk-note"></span>
+      <button class="primary" id="bk-save">Save</button>
+    </div>
+  </div>
+</div>
+<!-- Add to group -->
+<div id="grouper" class="modal" hidden>
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3 id="gp-title">Add to a group</h3>
+      <button class="x small" id="gp-close" aria-label="Close">×</button>
+    </div>
+    <input id="gp-q" placeholder="Search your groups — e.g. St. Barts" autocomplete="off">
+    <div id="gp-list" class="gp-list"></div>
+    <div id="gp-opts" class="gp-opts" hidden>
+      <div class="gp-chosen" id="gp-chosen"></div>
+      <label class="radio"><input type="radio" name="gp-date" value="move" checked>
+        <span>Move into this group's dates, starting at
+        <input type="datetime-local" step="60" id="gp-when"></span></label>
+      <p class="muted small" id="gp-when-note" style="margin:0 0 0 26px"></p>
+      <label class="radio"><input type="radio" name="gp-date" value="keep"> <span>Keep their own dates and times</span></label>
+    </div>
+    <div class="sheet-foot">
+      <span class="muted small">They get the group's name, and its place if they don't have one.</span>
+      <button class="primary" id="gp-save" disabled>Add to group</button>
+    </div>
+  </div>
+</div>
+<!-- Find matches -->
+<div id="matcher" class="modal" hidden>
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3>Find matches for this photo</h3>
+      <button class="x small" id="mt-close" aria-label="Close">×</button>
+    </div>
+    <div class="mt-top">
+      <img id="mt-me" alt="">
+      <div class="mt-scope">
+        <div class="bk-row"><label>Only look in photos named or tagged (leave blank for everything)</label>
+          <input id="mt-name" list="tag-list" placeholder="e.g. college" autocomplete="off"></div>
+        <div class="row">
+          <label class="field"><span>Year</span><input id="mt-year" placeholder="Any" inputmode="numeric" maxlength="4"></label>
+          <label class="field grow"><span>Place</span><input id="mt-place" list="places" placeholder="Any" autocomplete="off"></label>
+          <button class="primary" id="mt-go" style="align-self:flex-end">Search</button>
+        </div>
+      </div>
+    </div>
+    <p class="muted small" id="mt-sub"></p>
+    <div id="mt-list" class="mt-list"></div>
+  </div>
+</div>
+<!-- Guess a date -->
+<div id="guesser" class="modal" hidden>
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3>Guess the date</h3>
+      <button class="x small" id="gs-close" aria-label="Close">×</button>
+    </div>
+    <div class="mt-top">
+      <img id="gs-me" alt="">
+      <div class="mt-scope">
+        <p class="muted small" style="margin-top:0">I'll look for photos that seem to be from the same occasion — similar colors, light and setting — and show you their dates.</p>
+        <div class="bk-row"><label>Only look in photos named or tagged (optional)</label>
+          <input id="gs-name" list="tag-list" placeholder="e.g. college" autocomplete="off"></div>
+        <div class="row">
+          <label class="field"><span>Year</span><input id="gs-year" placeholder="Any" inputmode="numeric" maxlength="4"></label>
+          <label class="field grow"><span>Place</span><input id="gs-place" list="places" placeholder="Any" autocomplete="off"></label>
+          <button class="primary" id="gs-go" style="align-self:flex-end">Guess</button>
+        </div>
+      </div>
+    </div>
+    <p class="muted small" id="gs-sub"></p>
+    <div id="gs-list" class="mt-list"></div>
+  </div>
+</div>
+<datalist id="tag-list"></datalist>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

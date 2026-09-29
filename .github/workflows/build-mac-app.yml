@@ -1,0 +1,62 @@
+name: Build the Mac app
+
+# Runs on GitHub's own Macs whenever a new version tag (v1.0.0, v1.1.0, …) is pushed,
+# or by hand from the Actions tab. The finished app appears on the Releases page.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac-app:
+    runs-on: macos-14        # Apple silicon (M1 and newer)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install building blocks
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt -r app/requirements-faces.txt pywebview pyinstaller
+
+      - name: Gather ExifTool, face model, place names and icon
+        run: bash packaging/fetch_bundled.sh
+
+      - name: Build Picture Perfect.app
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then VERSION="0.0.0"; fi
+          APP_VERSION="$VERSION" pyinstaller --noconfirm --clean packaging/PicturePerfect.spec
+
+      - name: Check everything inside the app works
+        run: |
+          "dist/Picture Perfect.app/Contents/MacOS/Picture Perfect" --self-test
+
+      - name: Package
+        run: |
+          codesign --force --deep --sign - "dist/Picture Perfect.app"
+          ditto -c -k --sequesterRsrc --keepParent "dist/Picture Perfect.app" "Picture-Perfect-Mac.zip"
+          ls -la Picture-Perfect-Mac.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Picture-Perfect-Mac
+          path: Picture-Perfect-Mac.zip
+
+      - name: Publish on the Releases page
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Picture-Perfect-Mac.zip
+          body: |
+            **To install:** download **Picture-Perfect-Mac.zip** below, double-click it, and drag **Picture Perfect** into your **Applications** folder.
+
+            **First time only:** macOS will say it can't check the app for malware (it isn't from the App Store). Click **Done**, then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Picture Perfect.
+
+            **Updating:** download the new zip and replace the old app. Your settings and your catalog on the drive are kept.

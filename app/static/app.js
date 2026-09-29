@@ -1,0 +1,1612 @@
+/* Picture Perfect — front end */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const r = await fetch(path, opts);
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* ignore */ }
+  if (!r.ok) throw new Error(data.error || "Something went wrong");
+  return data;
+}
+
+function toast(msg, ms = 3200) {
+  const t = $("#toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.hidden = true), ms);
+}
+const fail = (e) => toast(e.message || String(e), 5000);
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function fmtDay(iso) {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const wd = DAYS[new Date(y, m - 1, d).getDay()];
+  return `${wd} ${d} ${MONTHS[m - 1]} ${y}`;
+}
+function fmtWhen(iso) {
+  return `${fmtDay(iso)}, ${iso.slice(11, 16)}`;
+}
+function fmtSize(b) {
+  if (!b) return "";
+  if (b > 1e9) return (b / 1e9).toFixed(1) + " GB";
+  if (b > 1e6) return (b / 1e6).toFixed(1) + " MB";
+  return Math.round(b / 1e3) + " KB";
+}
+const n = (x) => (x || 0).toLocaleString();
+const folderOf = (p) => p.split("/").slice(0, -1).join(" › ");
+const fileOf = (p) => p.split("/").pop();
+const plural = (x, one, many) => `${n(x)} ${x === 1 ? one : (many || one + "s")}`;
+const DATE_SOURCE = {
+  exif: "", sidecar: "from Google Takeout info", copied: "copied from a duplicate",
+  filename: "from the file name — time missing", filename_time: "from the file name",
+  file: "no date found — needs one", manual: "set by you", manual_date: "date only, time unknown",
+};
+
+/* ------------------------------------------------------------------ state */
+const S = { tab: "browse", state: null, lastJobFinished: true };
+
+async function refreshState() {
+  const st = await api("/api/state");
+  S.state = st;
+  const hasLib = !!st.library;
+  $("#tabs").hidden = !hasLib;
+  $("#top-actions").hidden = !hasLib;
+  if (hasLib) {
+    $("#btn-lib").textContent = st.library.split("/").filter(Boolean).slice(-2).join(" / ");
+    $("#btn-lib").title = st.library + " — click to change";
+    const s = st.stats || {};
+    $("#b-dupes").textContent = s.dup_groups ? n(s.dup_groups) : "";
+    $("#b-loc").textContent = s.no_location ? n(s.no_location) : "";
+    $("#b-inbox").textContent = s.inbox ? n(s.inbox) : "";
+  }
+  renderJob(st.job);
+  return st;
+}
+
+function renderJob(job) {
+  const box = $("#job");
+  if (!job) { box.hidden = true; return; }
+  box.hidden = false;
+  box.classList.toggle("done", job.finished);
+  box.classList.toggle("error", !!job.error);
+  $("#job-name").textContent = job.finished ? (job.error ? "Something went wrong:" : "Done.") : job.name + " —";
+  $("#job-close").hidden = !job.finished;
+  const bar = $(".bar", box);
+  if (!job.finished) {
+    $("#job-phase").textContent = job.phase + (job.total ? ` · ${n(job.done)} of ${n(job.total)}` : "");
+    $("#job-msg").textContent = job.message || "";
+    bar.classList.toggle("indeterminate", !job.total);
+    $("#job-bar").style.width = job.total ? (100 * job.done / job.total).toFixed(1) + "%" : "";
+  } else {
+    $("#job-phase").textContent = job.error || summarize(job);
+    $("#job-msg").textContent = "";
+  }
+}
+
+function summarize(job) {
+  const r = job.result || {};
+  const bits = [];
+  if (r.import_check) bits.push(`Checked ${plural(r.total, "photo")}: ${n(r.new)} new, ${n(r.exact + r.repeat + r.similar)} you may already have`);
+  if (r.copied !== undefined) bits.push(`${plural(r.copied, "photo")} added`, `${n(r.skipped)} left out`);
+  if (r.total !== undefined) bits.push(`${plural(r.total, "photo")} in your library`);
+  if (r.new_or_changed) bits.push(`${n(r.new_or_changed)} new or changed`);
+  if (r.inbox_new) bits.push(`${plural(r.inbox_new, "new photo")} ready to review`);
+  if (r.moved !== undefined && r.written !== undefined) {
+    bits.push(`${plural(r.moved, "file")} renamed or moved`);
+    if (r.synced) bits.push(`${n(r.synced)} dates, places and tags saved into photos`);
+    if (r.failed_count) bits.push(`${n(r.failed_count)} couldn't be changed (e.g. ${r.failed[0].name}: ${r.failed[0].error})`);
+  } else if (r.moved !== undefined) bits.push(`${plural(r.moved, "copy", "copies")} set aside`);
+  if (r.restored !== undefined) bits.push(`${plural(r.restored, "file")} put back`);
+  if (r.highlights_added) bits.push(`${plural(r.highlights_added, "photo")} added to highlights`);
+  if (r.highlights_removed) bits.push(`${plural(r.highlights_removed, "photo")} taken out of highlights`);
+  if (r.faces !== undefined) bits.push(`${plural(r.faces, "face")} found so far — see the People tab`);
+  if (r.picked !== undefined) {
+    bits.push(`${n(r.picked)} kept`, `${n(r.trashed)} moved to the Trash`);
+    if (r.set_aside) bits.push(`${n(r.set_aside)} couldn't go to the Trash and are in _Set aside`);
+  }
+  if (r.places_note) bits.push(r.places_note);
+  return bits.join(" · ");
+}
+
+async function poll() {
+  try {
+    const st = await refreshState();
+    const running = st.job && !st.job.finished;
+    if (!running && !S.lastJobFinished) {
+      S.lastJobFinished = true;
+      await loadFilters();
+      const res = (st.job && st.job.result) || {};
+      if (res.import_check && !st.job.error) showImport();
+      else if (res.inbox_new && !st.job.error) showTab("inbox");   // new photos: go straight to renaming
+      else if (S.tab === "inbox" && R.mode !== "inbox") showTab("inbox", true);
+      else showTab(S.tab, true);
+    }
+    if (running) S.lastJobFinished = false;
+    setTimeout(poll, running ? 800 : 4000);
+  } catch (e) {
+    setTimeout(poll, 4000);
+  }
+}
+
+/* ------------------------------------------------------------------ setup */
+function showSetup(st) {
+  $$(".view").forEach(v => (v.hidden = true));
+  $("#v-setup").hidden = false;
+  $("#setup-error").hidden = !st.error;
+  $("#setup-error").textContent = st.error || "";
+  $("#exiftool-warn").hidden = st.exiftool;
+  $("#btn-pick").hidden = !st.mac;
+  $("#recent").innerHTML = (st.recent || []).map(p => `<button data-p="${esc(p)}">${esc(p)}</button>`).join("");
+}
+
+async function openLibrary(path) {
+  try {
+    await api("/api/library", { path });
+    S.lastJobFinished = false;
+    await refreshState();
+    showTab("browse");
+  } catch (e) { fail(e); }
+}
+
+async function pickFolder(prompt) {
+  const r = await api("/api/pick-folder", { prompt });
+  return r.path;
+}
+
+$("#btn-pick").onclick = async () => { const p = await pickFolder("Choose your photo folder"); if (p) openLibrary(p); };
+$("#path-form").onsubmit = (e) => { e.preventDefault(); const p = $("#path-input").value.trim(); if (p) openLibrary(p); };
+$("#recent").onclick = (e) => { const b = e.target.closest("button"); if (b) openLibrary(b.dataset.p); };
+$("#btn-lib").onclick = () => { S.state.error = null; showSetup(S.state); $("#tabs").hidden = true; };
+$("#btn-scan").onclick = () => api("/api/scan", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+/* ------------------------------------------------------------------ check before importing */
+const IM = { items: [], take: new Set(), kind: "" };
+const MATCH_LABEL = { exact: "Exact copy", similar: "Look-alike", repeat: "Repeated in this folder" };
+
+function starsHtml(value, attr) {
+  return [1, 2, 3, 4, 5].map(k => `<button class="${value >= k ? "on" : ""}" ${attr}="${k}" aria-label="${k} star${k > 1 ? "s" : ""}">★</button>`).join("");
+}
+
+async function showImport() {
+  let r;
+  try { r = await api("/api/import/pending"); } catch (e) { return fail(e); }
+  if (!r.items) return showTab("browse");
+  IM.items = r.items; IM.take = new Set(); IM.kind = "";
+  if (IM.items.length && IM.items.every(i => i.status === "new")) {
+    toast(`None of these are in your library yet — copying ${plural(IM.items.length, "photo")}…`, 5000);
+    return api("/api/import/commit", { include: IM.items.map(i => i.i) }).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+  }
+  $$("#im-seg button").forEach(b => b.classList.toggle("on", b.dataset.k === ""));
+  $$(".view").forEach(v => (v.hidden = v.id !== "v-import"));
+  $$("#tabs button").forEach(b => b.classList.remove("on"));
+  const fresh = IM.items.filter(i => i.status === "new");
+  const matches = IM.items.filter(i => i.status !== "new");
+  const count = (k) => IM.items.filter(i => i.status === k).length;
+  $("#im-sub").textContent = `Nothing has been copied yet. I checked ${plural(IM.items.length, "photo")} from ${r.source.split("/").filter(Boolean).pop()} against your library — some look like photos you already have. Decide on those below, then press the button to copy.`;
+  const stat = (num, label) => `<div class="stat"><div class="n">${n(num)}</div><div class="l">${label}</div></div>`;
+  $("#im-stats").innerHTML = stat(fresh.length, "new") +
+    stat(count("exact"), "exact copies of photos you have") +
+    stat(count("similar"), "look-alikes of photos you have") + (count("repeat") ? stat(count("repeat"), "repeated in this folder") : "");
+  $("#im-new-wrap").hidden = !fresh.length;
+  $("#im-new-n").textContent = plural(fresh.length, "photo");
+  $("#im-new").innerHTML = fresh.map(it => `<div class="tile" title="${esc(it.name)}"><img loading="lazy" src="/import-thumb/${it.i}" alt=""><span class="lbl">${esc(it.name)}</span></div>`).join("");
+  $("#im-similar-wrap").hidden = !matches.length;
+  $$("#im-seg button").forEach(b => (b.hidden = b.dataset.k && !count(b.dataset.k)));
+  renderSimilar();
+}
+
+function renderSimilar() {
+  const list = IM.items.filter(i => i.status !== "new" && (!IM.kind || i.status === IM.kind));
+  const dims = (o) => [o.width ? `${o.width}×${o.height}` : "", fmtSize(o.size)].filter(Boolean).join(" · ");
+  $("#im-similar").innerHTML = list.map(it => {
+    const take = IM.take.has(it.i);
+    const m = it.match, o = it.other;
+    const right = m
+      ? `<img src="/thumb/${m.id}" alt=""><div><span class="who">In your library</span><b>${esc(m.name)}</b>${esc(m.folder || "")}<br>${dims(m)}${m.taken ? "<br>" + fmtWhen(m.taken) : ""}</div>`
+      : o ? `<img src="/import-thumb/${o.i}" alt=""><div><span class="who">Also in this folder</span><b>${esc(o.name)}</b>${dims(o)}${o.taken ? "<br>" + fmtWhen(o.taken) : ""}</div>` : "";
+    return `<div class="pair ${take ? "take" : ""}" data-i="${it.i}">
+      <div class="side"><img src="/import-thumb/${it.i}" alt=""><div><span class="who">New · ${MATCH_LABEL[it.status]}</span><b>${esc(it.name)}</b>${esc(it.folder || "")}${it.folder ? "<br>" : ""}${dims(it)}${it.taken ? "<br>" + fmtWhen(it.taken) : "<br>no date"}</div></div>
+      <div class="side">${right}</div>
+      <button class="${take ? "primary" : "ghost"}" data-take>${take ? "Will import" : "Import anyway"}</button>
+    </div>`;
+  }).join("");
+  updateImportButton();
+}
+
+$("#im-seg").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  IM.kind = b.dataset.k;
+  $$("#im-seg button").forEach(x => x.classList.toggle("on", x === b));
+  renderSimilar();
+};
+
+/* ------------------------------------------------------------------ pick the best (after import) */
+const PK = { items: [], keep: {}, rating: {}, label: "", cull: [], ci: 0, groups: [], sort: "time" };
+
+function pickOrder() {
+  const list = PK.items.slice();
+  if (PK.sort === "fav") list.sort((a, b) => (b.appeal ?? -1) - (a.appeal ?? -1));
+  return list;
+}
+
+async function loadPickGroups() {
+  $("#pk2-back").hidden = true; $("#pk2-set").hidden = true; $("#pk2-done").hidden = true;
+  $("#pk2-groups-wrap").hidden = false;
+  $("#pk2-title").textContent = "Prune";
+  $("#pk2-sub").textContent = "Choose a folder to go through. I'll suggest which photos to delete, and learn what you like as you go.";
+  try { PK.groups = await api("/api/groups"); } catch (e) { return fail(e); }
+  renderPickGroups();
+}
+function renderPickGroups() {
+  const q = $("#pk2-q").value.trim().toLowerCase();
+  const list = PK.groups.filter(g => !q || g.name.toLowerCase().includes(q) || g.start.startsWith(q) || (g.place || "").toLowerCase().includes(q)).slice(0, 150);
+  $("#pk2-groups").innerHTML = list.length ? list.map(g => `
+    <button class="gp" data-key="${esc(g.key)}">
+      <span class="th">${g.thumbs.map(id => `<img loading="lazy" src="/thumb/${id}" alt="">`).join("")}</span>
+      <span><b>${esc(g.start.slice(0, 7).replace("-", "."))} ${esc(g.name)}</b>
+        <span class="m">${fmtRange(g.start, g.end)} · ${plural(g.count, "item")}</span></span>
+    </button>`).join("") : `<p class="muted small">No folders yet. Name some photos and Organize them first.</p>`;
+}
+$("#pk2-q").addEventListener("input", renderPickGroups);
+$("#pk2-groups").onclick = async (e) => {
+  const b = e.target.closest(".gp"); if (!b) return;
+  const g = PK.groups.find(x => x.key === b.dataset.key);
+  try { openPickSet(await api("/api/group-ids", { key: g.key }), `${g.start.slice(0, 7).replace("-", ".")} ${g.name}`); } catch (err) { fail(err); }
+};
+$("#pk2-back").onclick = () => loadPickGroups();
+
+async function openPickSet(ids, label) {
+  showTab("pick", true);
+  PK.label = label;
+  $("#pk2-groups-wrap").hidden = true; $("#pk2-back").hidden = false;
+  $("#pk2-title").textContent = "Prune — " + label;
+  $("#pk2-sub").textContent = "Looking at your photos…";
+  let r;
+  try { r = await api("/api/pick", { ids }); } catch (e) { return fail(e); }
+  PK.items = r.items; PK.keep = {}; PK.rating = {};
+  PK.items.forEach(i => { PK.keep[i.i] = i.keep !== false; PK.rating[i.i] = i.rating || 0; });
+  const t = r.taste || {};
+  $("#pk2-taste").textContent = t.learning
+    ? `Suggestions include what I've learned from your last ${n(t.choices)} choices.`
+    : t.choices ? `Learning your taste — ${n(t.choices)} of ${t.needed} choices so far.` : "Your keep and skip choices teach it what you like.";
+  $("#pk2-sub").textContent = `${plural(PK.items.length, "item")}. Nothing moves until you press the button.`;
+  $("#pk2-set").hidden = false; $("#pk2-done").hidden = false;
+  renderPicks();
+}
+
+function renderPicks() {
+  const kept = PK.items.filter(i => PK.keep[i.i]).length;
+  const skip = PK.items.length - kept;
+  const stat = (num, label) => `<div class="stat"><div class="n">${n(num)}</div><div class="l">${label}</div></div>`;
+  $("#pk2-stats").innerHTML = stat(kept, "to keep") + stat(skip, "to delete") +
+    stat(PK.items.filter(i => PK.rating[i.i]).length, "with stars");
+  $("#pk2-list").innerHTML = pickOrder().map(pickTile).join("");
+  $("#pk2-done").textContent = skip ? `Keep ${n(kept)}, delete ${n(skip)}` : `Keep all ${n(kept)}`;
+}
+
+function pickTile(it) {
+  const keep = PK.keep[it.i];
+  const b = it.burst;
+  const why = !keep ? (it.why || "Marked by you") : (it.rule_skip && it.p != null ? "Kept — you usually keep photos like this" : "");
+  return `<div class="pk ${keep ? "keep" : "skip"}" data-i="${it.i}">
+    <div class="im" data-cull><img loading="lazy" src="/thumb/${it.i}" alt="">
+      <span class="badge2" data-toggle>${keep ? "Keep" : "Delete"}</span>
+      ${b ? `<span class="burst ${b.best ? "best" : ""}">${b.best ? "Sharpest of " + b.size : "Same moment · " + b.size}</span>` : ""}
+      ${it.kind === "video" ? `<span class="vid">▶ Video</span>` : ""}
+      ${it.favorite && keep ? `<span class="fav">★ Likely favorite</span>` : ""}
+    </div>
+    <div class="cap"><b>${esc(it.name)}</b>
+      ${why ? `<div class="why ${/usually/.test(why) ? "learned" : ""}">${esc(why)}</div>` : ""}
+      ${!why && it.favorite && it.appeal_why && it.appeal_why.length ? `<div class="fav-why">${esc(it.appeal_why.join(" · "))}</div>` : ""}
+      <span class="stars">${starsHtml(PK.rating[it.i] || 0, "data-star")}</span>
+    </div>
+  </div>`;
+}
+
+$("#pk2-list").onclick = (e) => {
+  const card = e.target.closest(".pk"); if (!card) return;
+  const i = +card.dataset.i;
+  const st = e.target.closest("[data-star]");
+  if (st) { const v = +st.dataset.star; PK.rating[i] = PK.rating[i] === v ? 0 : v; if (PK.rating[i]) PK.keep[i] = true; return renderPicks(); }
+  if (e.target.closest("[data-toggle]")) { PK.keep[i] = !PK.keep[i]; return renderPicks(); }
+  if (e.target.closest("[data-cull]")) openCull(i);
+};
+$("#pk2-keep-all").onclick = () => { PK.items.forEach(i => (PK.keep[i.i] = true)); renderPicks(); };
+$("#pk2-reset").onclick = () => { PK.items.forEach(i => (PK.keep[i.i] = i.keep !== false)); renderPicks(); };
+$("#pk2-done").onclick = () => {
+  const keep = PK.items.filter(i => PK.keep[i.i]).map(i => i.i);
+  const skip = PK.items.filter(i => !PK.keep[i.i]).map(i => i.i);
+  if (skip.length && !confirm(`Move ${plural(skip.length, "photo")} to the Trash? You can still Put Back from the Trash until you empty it.`)) return;
+  const ratings = {};
+  PK.items.forEach(i => { if ((PK.rating[i.i] || 0) !== (i.rating || 0)) ratings[i.i] = PK.rating[i.i] || 0; });
+  api("/api/pick/commit", { keep, skip, ratings }).then(() => {
+    S.lastJobFinished = false; refreshState();
+    loadPickGroups();
+  }).catch(fail);
+};
+
+/* big view with keyboard: K keep, X skip, 1-5 stars */
+$("#pk2-sort").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  PK.sort = b.dataset.v;
+  $$("#pk2-sort button").forEach(x => x.classList.toggle("on", x === b));
+  renderPicks();
+};
+
+function openCull(i) {
+  PK.cull = pickOrder();
+  PK.ci = Math.max(0, PK.cull.findIndex(x => x.i === i));
+  $("#cull").hidden = false;
+  renderCull();
+}
+function renderCull() {
+  const it = PK.cull[PK.ci]; if (!it) return;
+  const keep = PK.keep[it.i];
+  $("#cull").classList.toggle("is-keep", keep);
+  $("#cull").classList.toggle("is-skip", !keep);
+  $("#cu-stage").innerHTML = it.kind === "video"
+    ? `<video src="/media/${it.i}" controls autoplay playsinline></video>`
+    : `<img src="/media/${it.i}" alt="" onerror="this.src='/thumb/${it.i}'">`;
+  $("#cu-name").textContent = it.name + (it.taken ? " · " + fmtWhen(it.taken) : "");
+  $("#cu-why").textContent = !keep ? (it.why || "Marked for deleting by you") :
+    it.favorite && it.appeal_why && it.appeal_why.length ? "★ Likely favorite — " + it.appeal_why.join(" · ") : (it.burst ? (it.burst.best ? `Sharpest of ${it.burst.size} shots of this moment` : `One of ${it.burst.size} shots of this moment`) : "");
+  $("#cu-stars").innerHTML = starsHtml(PK.rating[it.i] || 0, "data-cstar");
+  $("#cu-keep").className = keep ? "primary" : "ghost";
+  $("#cu-skip").className = keep ? "ghost" : "primary";
+  $("#cu-count").textContent = `${PK.ci + 1} of ${n(PK.cull.length)}`;
+}
+function cullSet(keep, advance) {
+  const it = PK.cull[PK.ci]; if (!it) return;
+  PK.keep[it.i] = keep;
+  if (!keep) PK.rating[it.i] = 0;
+  if (advance && PK.ci < PK.cull.length - 1) PK.ci++;
+  renderCull();
+}
+function closeCull() { $("#cull").hidden = true; $("#cu-stage").innerHTML = ""; renderPicks(); }
+$("#cu-keep").onclick = () => cullSet(true, true);
+$("#cu-skip").onclick = () => cullSet(false, true);
+$("#cu-prev").onclick = () => { if (PK.ci > 0) { PK.ci--; renderCull(); } };
+$("#cu-next").onclick = () => { if (PK.ci < PK.cull.length - 1) { PK.ci++; renderCull(); } };
+$("#cu-close").onclick = closeCull;
+$("#cu-stars").onclick = (e) => {
+  const b = e.target.closest("[data-cstar]"); if (!b) return;
+  const it = PK.cull[PK.ci]; const v = +b.dataset.cstar;
+  PK.rating[it.i] = PK.rating[it.i] === v ? 0 : v; if (PK.rating[it.i]) PK.keep[it.i] = true;
+  renderCull();
+};
+document.addEventListener("keydown", (e) => {
+  if ($("#cull").hidden) return;
+  const k = e.key.toLowerCase();
+  if (k === "escape") return closeCull();
+  if (k === "arrowright") return $("#cu-next").click();
+  if (k === "arrowleft") return $("#cu-prev").click();
+  if (k === "k" || k === "p") return cullSet(true, true);
+  if (k === "d" || k === "x" || k === "delete" || k === "backspace") { e.preventDefault(); return cullSet(false, true); }
+  if ("012345".includes(k)) {
+    const it = PK.cull[PK.ci]; PK.rating[it.i] = +k; if (+k) PK.keep[it.i] = true;
+    if (+k && PK.ci < PK.cull.length - 1) PK.ci++;
+    renderCull();
+  }
+}, true);
+
+function updateImportButton() {
+  const count = IM.items.filter(i => i.status === "new").length + IM.take.size;
+  const label = count ? `Copy ${plural(count, "photo")} to your drive ›` : "Nothing to copy";
+  ["#im-go", "#im-go-top"].forEach(sel => { $(sel).textContent = label; $(sel).disabled = !count; });
+}
+
+$("#im-similar").onclick = (e) => {
+  const b = e.target.closest("[data-take]"); if (!b) return;
+  const i = +b.closest(".pair").dataset.i;
+  IM.take.has(i) ? IM.take.delete(i) : IM.take.add(i);
+  renderSimilar();
+};
+$("#im-cancel").onclick = async () => { await api("/api/import/cancel", {}); showTab("browse"); };
+$("#im-go-top").onclick = () => $("#im-go").click();
+$("#im-go").onclick = () => {
+  const include = IM.items.filter(i => i.status === "new" || IM.take.has(i.i)).map(i => i.i);
+  api("/api/import/commit", { include }).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+
+$("#btn-import").onclick = async () => {
+  let p = S.state.mac ? await pickFolder("Choose the folder with your new photos") : prompt("Folder with new photos:");
+  if (!p) return;
+  api("/api/import", { path: p }).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+$("#job-close").onclick = () => api("/api/job/dismiss", {}).then(refreshState);
+
+/* ------------------------------------------------------------------ tabs */
+$("#tabs").onclick = (e) => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); };
+
+function showTab(tab, soft) {
+  if (!S.state || !S.state.library) return showSetup(S.state || {});
+  S.tab = tab;
+  $$("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  $$(".view").forEach(v => (v.hidden = v.id !== "v-" + tab));
+  if (tab === "inbox") { if (!soft) R.mode = "inbox"; loadReview(); }
+  if (tab === "browse") loadBrowse(true, soft);
+  if (tab === "dupes") loadDupes();
+  if (tab === "pick" && !soft) loadPickGroups();
+  if (tab === "people") { if (!soft) PP.detail = null; PP.detail ? openDetail(PP.detail) : loadPeople(); }
+  if (tab === "locations") loadLocations(true);
+  if (tab === "organize") loadOrganize();
+}
+
+/* ------------------------------------------------------------------ browse */
+const B = { offset: 0, items: [], days: {}, total: 0 };
+
+async function loadFilters() {
+  if (!S.state || !S.state.library) return;
+  try {
+    const f = await api("/api/filters");
+    $("#places").innerHTML = f.places.map(p => `<option value="${esc(p)}">`).join("");
+    $("#tag-list").innerHTML = (f.tags || []).map(t => `<option value="${esc(t)}">`).join("");
+    const sel = $("#f-year"), cur = sel.value;
+    sel.innerHTML = `<option value="">Any year</option>` + f.years.map(y => `<option>${y}</option>`).join("") +
+      `<option value="none">Needs a date or time</option>`;
+    sel.value = cur;
+  } catch (e) { /* ignore */ }
+}
+
+function browseFilters() {
+  return { place: $("#f-place").value.trim(), year: $("#f-year").value, month: $("#f-month").value,
+           name: $("#f-name").value.trim(), rating: $("#f-rating").value };
+}
+
+async function checkUnorganized() {
+  try {
+    const r = await api("/api/unorganized");
+    $("#browse-unorg").hidden = !r.count;
+    $("#browse-unorg-text").innerHTML = `<b>${plural(r.count, "photo")} still ${r.count === 1 ? "has its" : "have their"} old name${r.count === 1 ? "" : "s"}.</b> Nothing gets renamed or moved until you say so — see what each will be renamed to, then press Apply.`;
+  } catch (e) { /* ignore */ }
+}
+$("#browse-unorg-go").onclick = () => showTab("organize");
+
+async function loadBrowse(reset, soft) {
+  if (reset) checkUnorganized();
+  if (reset) { B.offset = 0; B.items = []; B.days = {}; }
+  const q = new URLSearchParams(Object.assign(browseFilters(), { offset: B.offset, limit: 150 }));
+  let r;
+  try { r = await api("/api/search?" + q); } catch (e) { return fail(e); }
+  B.total = r.total;
+  B.items = B.items.concat(r.items);
+  Object.assign(B.days, r.days);
+  B.offset = B.items.length;
+  renderBrowse();
+}
+
+function renderBrowse() {
+  const grid = $("#grid");
+  const byDay = [];
+  for (const it of B.items) {
+    const d = it.taken.slice(0, 10);
+    if (!byDay.length || byDay[byDay.length - 1].day !== d) byDay.push({ day: d, items: [] });
+    byDay[byDay.length - 1].items.push(it);
+  }
+  let idx = 0;
+  grid.innerHTML = byDay.map(g => {
+    const info = B.days[g.day] || {};
+    const title = info.name || "";
+    const meta = [info.place && info.place !== title ? info.place : "", plural(info.count || g.items.length, "photo")].filter(Boolean).join(" · ");
+    return `<div class="day">
+        <h3>${fmtDay(g.day)}</h3>
+        ${title ? `<span class="dname">${esc(title)}</span>` : ""}
+        <span class="dmeta">${esc(meta)}</span>
+        <button class="link" data-name-day="${g.day}">${title ? "Rename day" : "Name this day"}</button>
+        <button class="link" data-edit-day="${g.day}">Edit photos</button>
+      </div>
+      <div class="tiles">${g.items.map(it => tile(it, idx++)).join("")}</div>`;
+  }).join("");
+  const f = browseFilters();
+  const what = [f.month && f.year ? `${MONTH_NAMES[+f.month - 1]} ${f.year}` : f.year && f.year !== "none" ? f.year : "",
+                f.place, f.name].filter(Boolean).join(" · ");
+  $("#browse-count").textContent = B.total ? `${plural(B.total, "photo")}${what ? " — " + what : ""}` : "";
+  const filtered = !!(f.place || f.year || f.name || f.rating);
+  $("#browse-edit").hidden = !B.total || !filtered;
+  $("#browse-pick").hidden = !B.total || !filtered;
+  $("#browse-edit").textContent = `Edit these ${plural(B.total, "photo")}`;
+  $("#browse-more").hidden = B.items.length >= B.total;
+  $("#browse-empty").hidden = B.total > 0;
+}
+
+function tile(it, i) {
+  return `<div class="tile" data-i="${i}" title="${esc(it.name)}">
+    <img loading="lazy" src="/thumb/${it.id}" alt="">
+    ${it.kind === "video" ? `<span class="vid">▶ Video</span>` : ""}
+    ${it.rating ? `<span class="vid" style="left:6px;right:auto;color:#f3c34a">${"★".repeat(it.rating)}</span>` : ""}
+    ${it.raw ? `<span class="vid" style="top:6px;bottom:auto">RAW+JPEG</span>` : ""}
+  </div>`;
+}
+
+$("#grid").onclick = (e) => {
+  const nd = e.target.closest("[data-name-day]");
+  if (nd) return openNamer(nd.dataset.nameDay);
+  const ed = e.target.closest("[data-edit-day]");
+  if (ed) return openDay(ed.dataset.editDay);
+  const t = e.target.closest(".tile");
+  if (t) openViewer(B.items, +t.dataset.i);
+};
+$("#browse-more").onclick = () => loadBrowse(false);
+let fTimer;
+["#f-place", "#f-name"].forEach(s => $(s).addEventListener("input", () => { clearTimeout(fTimer); fTimer = setTimeout(() => loadBrowse(true), 300); }));
+$("#f-year").onchange = () => {
+  const y = $("#f-year").value;
+  $("#f-month-wrap").hidden = !y || y === "none";
+  $("#f-month").innerHTML = `<option value="">Any month</option>` + MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
+  loadBrowse(true);
+};
+$("#f-month").onchange = () => loadBrowse(true);
+$("#f-rating").onchange = () => loadBrowse(true);
+$("#f-clear").onclick = () => { $("#f-place").value = ""; $("#f-name").value = ""; $("#f-year").value = ""; $("#f-month").value = ""; $("#f-rating").value = ""; $("#f-month-wrap").hidden = true; loadBrowse(true); };
+$("#browse-pick").onclick = async () => {
+  try {
+    const ids = await api("/api/search?" + new URLSearchParams(Object.assign(browseFilters(), { ids: "1" })));
+    openPickSet(ids, $("#browse-count").textContent.split(" — ")[1] || "your selection");
+  } catch (e) { fail(e); }
+};
+$("#browse-edit").onclick = async () => {
+  try {
+    const ids = await api("/api/search?" + new URLSearchParams(Object.assign(browseFilters(), { ids: "1" })));
+    R.mode = "set"; R.ids = ids; R.setLabel = $("#browse-count").textContent.split(" — ")[1] || "";
+    showTab("inbox", true);
+  } catch (e) { fail(e); }
+};
+
+/* ------------------------------------------------------------------ name a day */
+let namingDay = null;
+function openNamer(day) {
+  namingDay = day;
+  const info = B.days[day] || {};
+  $("#nm-title").textContent = "Name " + fmtDay(day);
+  $("#nm-input").value = info.name || info.place || "";
+  $("#namer").hidden = false;
+  updateNamePreview();
+  setTimeout(() => $("#nm-input").select(), 30);
+}
+function updateNamePreview() {
+  const v = $("#nm-input").value.trim();
+  $("#nm-preview").textContent = `${namingDay.replace(/-/g, ".")} 1432${v ? " " + v : ""}.jpg`;
+}
+$("#nm-input").addEventListener("input", updateNamePreview);
+$("#nm-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#nm-save").click(); });
+$("#nm-close").onclick = () => ($("#namer").hidden = true);
+$("#nm-save").onclick = async () => {
+  try {
+    const r = await api("/api/name-day", { date: namingDay, title: $("#nm-input").value });
+    $("#namer").hidden = true;
+    toast(`Named ${plural(r.updated, "photo")}. Apply it from the Organize tab.`);
+    loadBrowse(true);
+  } catch (e) { fail(e); }
+};
+
+/* ------------------------------------------------------------------ viewer */
+const V = { list: [], i: 0 };
+function openViewer(list, i) { V.list = list; V.i = i; $("#viewer").hidden = false; renderViewer(); }
+function closeViewer() { $("#viewer").hidden = true; $("#v-stage").innerHTML = ""; }
+function renderViewer() {
+  const it = V.list[V.i];
+  if (!it) return closeViewer();
+  $("#v-stage").innerHTML = it.kind === "video"
+    ? `<video src="/media/${it.id}" controls autoplay playsinline></video>`
+    : `<img src="/media/${it.id}" alt="" onerror="this.src='/thumb/${it.id}'">`;
+  const ds = DATE_SOURCE[it.date_source] || "";
+  $("#v-info").innerHTML = `
+    <h3>${esc(it.name)}</h3>
+    <dl>
+      <div><dt>Taken</dt><dd>${fmtWhen(it.taken)}${ds ? `<div class="${it.date_source === "file" ? "note" : "muted small"}">${ds}</div>` : ""}</dd></div>
+      <div><dt>Place</dt><dd>${it.place ? esc(it.place) : `<span class="muted">No location</span>`}
+        ${it.lat != null ? `<div class="muted small">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}${it.gps_source === "nearby" ? " · from a nearby photo" : it.gps_source === "manual" ? " · set by you" : ""}</div>` : ""}
+        ${it.city && it.place && !it.place.startsWith(it.city) ? `<div class="muted small">Filed under ${esc(it.city)}</div>` : ""}</dd></div>
+      ${it.camera ? `<div><dt>Camera</dt><dd>${esc(it.camera)}</dd></div>` : ""}
+      ${it.people && it.people.length ? `<div><dt>People</dt><dd>${it.people.map(t => `<span class="chip" style="padding-right:10px">${esc(t)}</span>`).join(" ")}</dd></div>` : ""}
+      ${it.tags && it.tags.length ? `<div><dt>Tags</dt><dd>${it.tags.map(t => `<span class="chip" style="padding-right:10px">${esc(t)}</span>`).join(" ")}</dd></div>` : ""}
+      <div><dt>Rating</dt><dd><span class="stars big" id="v-stars">${starsHtml(it.rating || 0, "data-vstar")}</span></dd></div>
+      <div><dt>Size</dt><dd>${it.width ? `${it.width} × ${it.height} · ` : ""}${fmtSize(it.size)}</dd></div>
+      ${it.raw ? `<div><dt>Also saved as RAW</dt><dd>${esc(it.raw)}<div class="muted small">Kept together with this photo — same name, dates, place and tags.</div></dd></div>` : ""}
+      <div><dt>Folder</dt><dd>${esc(it.folder || "(top of drive)")}</dd></div>
+    </dl>
+    <div class="actions">
+      ${S.state.mac ? `<button class="ghost" id="v-reveal">Show in Finder</button>` : ""}
+      <button class="ghost" id="v-place">${it.place ? "Change place…" : "Set place…"}</button>
+      <button class="ghost" id="v-group">Add to group…</button>
+      ${it.kind === "photo" ? `<button class="ghost" id="v-match">Find matches…</button>` : ""}
+      ${it.kind === "photo" && ["file", "filename", "manual_date"].includes(it.date_source) ? `<button class="ghost" id="v-guess">Guess date…</button>` : ""}
+    </div>
+    <p class="muted small" style="margin-top:14px">${V.i + 1} of ${n(V.list.length)} · ← → to move, Esc to close</p>`;
+  const rv = $("#v-reveal");
+  if (rv) rv.onclick = () => api("/api/reveal/" + it.id, {});
+  const vg = $("#v-guess");
+  if (vg) vg.onclick = () => openGuesser(it, () => { api("/api/file/" + it.id).then(f => { Object.assign(it, f); renderViewer(); }); });
+  const vm = $("#v-match");
+  if (vm) vm.onclick = () => openMatcher(it, () => { api("/api/file/" + it.id).then(f => { Object.assign(it, f); renderViewer(); }).catch(() => closeViewer()); });
+  $("#v-stars").onclick = async (e) => {
+    const b = e.target.closest("[data-vstar]"); if (!b) return;
+    const v = +b.dataset.vstar === it.rating ? 0 : +b.dataset.vstar;
+    try { await api("/api/edit", { ids: [it.id], rating: v }); it.rating = v || null; renderViewer();
+          toast(v ? `Rated ${"★".repeat(v)} — saved into the photo next time you Save or Organize.` : "Rating removed."); } catch (err) { fail(err); }
+  };
+  $("#v-group").onclick = () => openGrouper([it.id], [it], (r) => {
+    // outside Drive Preview, rename and file it straight away
+    const ids = r.items.map(x => x.id);
+    api("/api/organize/apply", { ids }).then(() => {
+      S.lastJobFinished = false; refreshState();
+      toast(`Added to “${r.group}” — renaming it now.`);
+      closeViewer();
+    }).catch(fail);
+  });
+  $("#v-place").onclick = () => openPicker([it.id], "Place for this photo", () => {
+    api("/api/file/" + it.id).then(f => { Object.assign(it, f); renderViewer(); });
+  });
+}
+$("#v-close").onclick = closeViewer;
+$("#v-prev").onclick = () => { if (V.i > 0) { V.i--; renderViewer(); } };
+$("#v-next").onclick = () => { if (V.i < V.list.length - 1) { V.i++; renderViewer(); } };
+document.addEventListener("keydown", (e) => {
+  if (!$("#picker").hidden || !$("#namer").hidden || !$("#bulk").hidden || !$("#grouper").hidden || !$("#matcher").hidden || !$("#guesser").hidden) {
+    if (e.key === "Escape") { ["#picker", "#namer", "#bulk", "#grouper", "#matcher", "#guesser"].forEach(x => ($(x).hidden = true)); }
+    return;
+  }
+  if ($("#viewer").hidden || !$("#cull").hidden) return;
+  if (e.key === "Escape") closeViewer();
+  if (e.key === "ArrowLeft") $("#v-prev").click();
+  if (e.key === "ArrowRight") $("#v-next").click();
+  if ("012345".includes(e.key) && V.list[V.i] && !e.target.matches("input")) {
+    const it = V.list[V.i];
+    api("/api/edit", { ids: [it.id], rating: +e.key }).then(() => { it.rating = +e.key || null; renderViewer(); }).catch(fail);
+  }
+});
+
+/* ------------------------------------------------------------------ duplicates */
+const D = { kind: "", groups: [], total: 0, choice: {} };
+
+async function loadDupes() {
+  let r;
+  try { r = await api("/api/dupes?kind=" + D.kind); } catch (e) { return fail(e); }
+  D.groups = r.groups; D.total = r.total;
+  D.choice = {};
+  for (const g of D.groups) {
+    D.choice[g.key] = {};
+    g.files.forEach(f => (D.choice[g.key][f.id] = f.id === g.keep));
+  }
+  const all = r.exact + r.similar;
+  $("#dupes-sub").textContent = all
+    ? `${plural(all, "group")} to review — ${n(r.exact)} exact, ${n(r.similar)} look-alike`
+    : "";
+  $("#dupes-auto").hidden = !r.exact;
+  $("#dupes-auto-n").textContent = plural(r.exact, "group") ;
+  $("#dupes-empty").hidden = r.total > 0;
+  const aside = (S.state.stats || {}).set_aside || 0;
+  $("#aside-foot").hidden = !aside;
+  $("#aside-n").textContent = `${plural(aside, "photo")} set aside so far.`;
+  renderDupes();
+}
+
+function renderDupes() {
+  $("#dupe-list").innerHTML = D.groups.map(g => `
+    <div class="card" data-key="${g.key}">
+      <div class="card-head">
+        <div><span class="kind">${g.kind === "exact" ? "Exact copies" : "Look-alikes"}</span>${plural(g.files.length, "file")}</div>
+        <span class="muted">${fmtWhen(g.taken)}</span>
+      </div>
+      <div class="dups">${g.files.map(f => dupTile(g, f)).join("")}</div>
+      <div class="card-actions">
+        <button class="primary" data-act="done">Done</button>
+        <button class="ghost" data-act="all">They're different — keep all</button>
+        <span class="spacer"></span>
+        <button class="link" data-act="skip">Skip for now</button>
+      </div>
+    </div>`).join("");
+}
+
+function dupTile(g, f) {
+  const keep = D.choice[g.key][f.id];
+  const bits = [];
+  if (f.width) bits.push(`${f.width}×${f.height}`);
+  bits.push(fmtSize(f.size));
+  return `<div class="dup ${keep ? "keep" : "aside"}" data-id="${f.id}">
+    <div class="img"><img loading="lazy" src="/thumb/${f.id}" alt=""><span class="tag">${keep ? "Keep" : "Set aside"}</span></div>
+    <div class="meta">
+      <b>${esc(f.name)}</b><br>
+      ${esc(f.folder || "(top of drive)")}<br>
+      ${bits.join(" · ")}${f.id === g.keep ? ` · <span class="best">best copy</span>` : ""}<br>
+      ${f.place ? esc(f.place) : "No location"}${f.date_source === "file" ? " · date guessed" : ""}
+    </div>
+  </div>`;
+}
+
+$("#dupe-list").onclick = async (e) => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  const key = card.dataset.key;
+  const g = D.groups.find(x => x.key === key);
+  const tileEl = e.target.closest(".dup");
+  if (tileEl) {
+    const id = +tileEl.dataset.id;
+    D.choice[key][id] = !D.choice[key][id];
+    tileEl.outerHTML = dupTile(g, g.files.find(f => f.id === id));
+    return;
+  }
+  const act = e.target.closest("[data-act]");
+  if (!act) return;
+  if (act.dataset.act === "skip") { card.remove(); D.groups = D.groups.filter(x => x.key !== key); if (!D.groups.length) loadDupes(); return; }
+  let keep = g.files.filter(f => D.choice[key][f.id]).map(f => f.id);
+  let aside = g.files.filter(f => !D.choice[key][f.id]).map(f => f.id);
+  if (act.dataset.act === "all") { keep = g.files.map(f => f.id); aside = []; }
+  if (!keep.length) return toast("Keep at least one copy.");
+  try {
+    const r = await api("/api/dupes/resolve", { key, keep, aside });
+    card.remove();
+    D.groups = D.groups.filter(x => x.key !== key);
+    if (r.moved) toast(`${plural(r.moved, "copy", "copies")} set aside.`);
+    refreshState();
+    if (!D.groups.length) loadDupes();
+  } catch (e2) { fail(e2); }
+};
+$("#dupes-seg").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  D.kind = b.dataset.k;
+  $$("#dupes-seg button").forEach(x => x.classList.toggle("on", x === b));
+  loadDupes();
+};
+$("#btn-auto").onclick = () => {
+  if (!confirm("Keep the best copy of every exact duplicate and move the others to “_Set aside”?")) return;
+  api("/api/dupes/auto-exact", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+$("#btn-restore").onclick = () => {
+  if (!confirm("Move every set-aside photo back to where it was?")) return;
+  api("/api/dupes/restore", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+
+/* ------------------------------------------------------------------ locations */
+const L = { days: [], offset: 0, total: 0 };
+
+async function loadLocations(reset) {
+  if (reset) { L.days = []; L.offset = 0; }
+  let r;
+  try { r = await api("/api/locations?offset=" + L.offset); } catch (e) { return fail(e); }
+  L.days = L.days.concat(r.days);
+  L.offset = L.days.length;
+  L.daysTotal = r.days_total;
+  $("#loc-sub").textContent = r.total
+    ? `${plural(r.total, "photo")} without a location${r.covered ? ` — ${n(r.covered)} can be filled in from nearby photos` : ""}`
+    : "";
+  $("#btn-accept-all").hidden = !r.covered;
+  $("#btn-accept-all").textContent = `Use all ${n(r.covered)} suggestions`;
+  $("#loc-empty").hidden = r.total > 0;
+  $("#loc-more").hidden = L.days.length >= r.days_total;
+  renderLocations();
+}
+
+function renderLocations() {
+  $("#loc-list").innerHTML = L.days.map((d, i) => {
+    const shown = d.ids.slice(0, 10);
+    const extra = d.ids.length - shown.length;
+    const sug = d.covered
+      ? `<span><span class="dot"></span>Suggested:</span> <span class="place">${esc(d.place || "")}</span>
+         <span class="muted small">${esc(d.why || "")}${d.covered < d.count ? ` · covers ${n(d.covered)} of ${n(d.count)}` : ""}</span>`
+      : `<span class="muted"><span class="dot none"></span>No nearby photos with a location — choose one.</span>`;
+    return `<div class="card" data-i="${i}">
+      <div class="card-head"><h3>${fmtDay(d.date)}</h3><span class="muted">${plural(d.count, "photo")}${d.guessed_dates ? ` · ${n(d.guessed_dates)} with guessed dates` : ""}</span></div>
+      <div class="suggest">${sug}</div>
+      <div class="strip">${shown.map(id => `<img loading="lazy" src="/thumb/${id}" alt="">`).join("")}${extra > 0 ? `<div class="plus">+${n(extra)}</div>` : ""}</div>
+      <div class="card-actions">
+        ${d.covered ? `<button class="primary" data-act="accept">Use suggestion</button>` : ""}
+        <button class="${d.covered ? "ghost" : "primary"}" data-act="choose">Choose place…</button>
+        <span class="spacer"></span>
+        <button class="link" data-act="skip">Leave without location</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+$("#loc-list").onclick = async (e) => {
+  const act = e.target.closest("[data-act]"); if (!act) return;
+  const d = L.days[+act.closest(".card").dataset.i];
+  try {
+    if (act.dataset.act === "accept") {
+      const r = await api("/api/locations/accept", { ids: d.ids });
+      toast(`Location added to ${plural(r.updated, "photo")}.`);
+    } else if (act.dataset.act === "skip") {
+      await api("/api/locations/skip", { ids: d.ids });
+    } else {
+      return openPicker(d.ids, `Place for ${fmtDay(d.date)} · ${plural(d.count, "photo")}`, () => { refreshState(); loadLocations(true); }, d.place);
+    }
+    refreshState(); loadLocations(true);
+  } catch (e2) { fail(e2); }
+};
+$("#loc-more").onclick = () => loadLocations(false);
+$("#btn-accept-all").onclick = async () => {
+  try {
+    const r = await api("/api/locations/accept", {});
+    toast(`Location added to ${plural(r.updated, "photo")}.`);
+    refreshState(); loadLocations(true);
+  } catch (e) { fail(e); }
+};
+
+/* ------------------------------------------------------------------ place picker */
+const P = { ids: [], chosen: null, map: null, marker: null, done: null, results: [] };
+
+function openPicker(ids, title, done, initial) {
+  P.ids = ids; P.done = done; P.chosen = null;
+  $("#pk-title").textContent = title;
+  $("#pk-q").value = initial && initial !== "At sea" ? initial.split(",")[0].replace(/^Near /, "") : "";
+  $("#pk-results").innerHTML = "";
+  $("#pk-chosen").textContent = "";
+  $("#pk-save").disabled = true;
+  $("#picker").hidden = false;
+  setTimeout(() => {
+    ensureMap();
+    $("#pk-q").focus();
+    if ($("#pk-q").value) searchPlaces();
+  }, 30);
+}
+
+function ensureMap() {
+  if (!window.L) { $("#pk-map").innerHTML = `<p class="muted small" style="padding:14px">Map needs an internet connection. Search still works.</p>`; return; }
+  if (!P.map) {
+    P.map = window.L.map("pk-map", { worldCopyJump: true }).setView([14, -62], 5);
+    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18, attribution: "© OpenStreetMap",
+    }).addTo(P.map);
+    P.map.on("click", (e) => choose({ name: null, label: "Dropped pin", lat: e.latlng.lat, lon: e.latlng.lng }, false));
+  }
+  setTimeout(() => P.map.invalidateSize(), 50);
+}
+
+function choose(place, fly = true) {
+  P.chosen = place;
+  $("#pk-chosen").textContent = place.label + ` (${place.lat.toFixed(4)}, ${place.lon.toFixed(4)})`;
+  $("#pk-save").disabled = false;
+  if (P.map) {
+    if (!P.marker) P.marker = window.L.marker([place.lat, place.lon]).addTo(P.map);
+    P.marker.setLatLng([place.lat, place.lon]);
+    if (fly) P.map.setView([place.lat, place.lon], 12);
+  }
+}
+
+let pkTimer;
+$("#pk-q").addEventListener("input", () => { clearTimeout(pkTimer); pkTimer = setTimeout(searchPlaces, 500); });
+async function searchPlaces() {
+  const q = $("#pk-q").value.trim();
+  if (q.length < 2) return;
+  $("#pk-results").innerHTML = `<p class="muted small">Searching…</p>`;
+  try {
+    P.results = await api("/api/places?q=" + encodeURIComponent(q));
+    $("#pk-results").innerHTML = P.results.length
+      ? P.results.map((p, i) => `<button data-i="${i}">${esc(p.label)}${p.detail ? `<span class="d">${esc(p.detail)}</span>` : ""}</button>`).join("")
+      : `<p class="muted small">Nothing found. Try a nearby town, or click the map.</p>`;
+  } catch (e) { $("#pk-results").innerHTML = `<p class="muted small">${esc(e.message)}</p>`; }
+}
+$("#pk-results").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  $$("#pk-results button").forEach(x => x.classList.toggle("on", x === b));
+  choose(P.results[+b.dataset.i]);
+};
+$("#pk-close").onclick = () => ($("#picker").hidden = true);
+$("#pk-save").onclick = async () => {
+  const c = P.chosen; if (!c) return;
+  try {
+    const r = await api("/api/locations/set", { ids: P.ids, lat: c.lat, lon: c.lon, name: c.name, label: c.label });
+    $("#picker").hidden = true;
+    toast(`Saved “${r.place}” for ${plural(r.updated, "photo")}.`);
+    if (P.done) P.done();
+  } catch (e) { fail(e); }
+};
+
+/* ------------------------------------------------------------------ organize */
+async function loadOrganize(data) {
+  let r = data;
+  if (!r) {
+    $("#org-stats").innerHTML = `<p class="muted">Working out the changes…</p>`;
+    try { r = await api("/api/organize"); } catch (e) { return fail(e); }
+  }
+  const s = r.settings;
+  $$("#set-folders button").forEach(b => b.classList.toggle("on", b.dataset.v === s.folders));
+  $$("#set-time button").forEach(b => b.classList.toggle("on", b.dataset.v === s.time));
+  $$("#set-highlights button").forEach(b => b.classList.toggle("on", b.dataset.v === s.highlights));
+  $("#org-hl-note").innerHTML = s.highlights === "off"
+    ? `<span class="muted small">No highlights folders.</span>`
+    : `<span class="muted small">📁 <b>2025 Highlights</b> holds a copy of every ${s.highlights === "5" ? "5-star" : "4- and 5-star"} photo from 2025 — ${plural(r.highlights, "photo")} across all years right now. Originals stay in their folders.</span>`;
+  $("#btn-hl").hidden = s.highlights === "off";
+  const folder = { month_group: "2025.07 › 2025.07 Spain", year_month: "2025 › 2025-07", year: "2025" }[s.folders] || "";
+  $("#org-example").textContent = (folder ? `📁 ${folder} › ` : "") + `2025.07.14${s.time === "1" ? " 1030" : ""} Spain.jpg`;
+
+  const dg = (S.state.stats || {}).dup_groups || 0;
+  $("#org-dupes-note").hidden = !dg;
+  $("#org-dupes-note").textContent = dg ? `You still have ${plural(dg, "duplicate group")} to review. It's fine to organize now, but clearing them first means fewer files to rename.` : "";
+
+  const stat = (num, label) => `<div class="stat"><div class="n">${n(num)}</div><div class="l">${label}</div></div>`;
+  $("#org-stats").innerHTML =
+    stat(r.renames, "files to rename or move") +
+    stat(r.gps, "locations to save into photos") +
+    stat(r.dates, "dates to save into photos") +
+    (r.tags ? stat(r.tags, "photos with new tags") : "") +
+    (r.needs_date ? `<div class="stat"><div class="n" style="color:var(--warn)">${n(r.needs_date)}</div>
+       <div class="l">need a date or time — they wait until you add one</div>
+       <button class="link" style="padding-left:0" id="org-needs">Add dates &amp; times ›</button></div>` : "");
+  const nb = $("#org-needs");
+  if (nb) nb.onclick = () => { R.mode = "needs"; showTab("inbox", true); };
+  $("#btn-apply").disabled = !r.total;
+  $("#btn-undo").hidden = !r.can_undo;
+
+  $("#org-list").innerHTML = r.total ? r.sample.map(c => {
+    const flags = [c.gps ? "+ location" : "", c.date ? "+ date" : "", c.tags ? "+ tags" : ""].filter(Boolean).join(" ");
+    return `<div class="change">
+      <img loading="lazy" src="/thumb/${c.id}" alt="">
+      <div>
+        ${c.old !== c.new ? `<div class="old">${esc(fileOf(c.old))}</div>` : ""}
+        <div class="new">${esc(fileOf(c.new))}<span class="muted small"> · 📁 ${esc(folderOf(c.new) || "top of drive")}</span>${flags ? `<span class="flags">${flags}</span>` : ""}${c.guessed ? `<span class="flags warnf">date guessed</span>` : ""}</div>
+      </div>
+    </div>`;
+  }).join("") + (r.total > r.sample.length ? `<div class="tail">…and ${n(r.total - r.sample.length)} more</div>` : "")
+    : `<div class="empty"><div class="big-check">✓</div>Everything is already organized.</div>`;
+}
+
+async function saveSetting(key, value) {
+  try { loadOrganize(await api("/api/organize/settings", { [key]: value })); } catch (e) { fail(e); }
+}
+$("#set-folders").onclick = (e) => { const b = e.target.closest("button"); if (b) saveSetting("folders", b.dataset.v); };
+$("#set-time").onclick = (e) => { const b = e.target.closest("button"); if (b) saveSetting("time", b.dataset.v); };
+$("#set-highlights").onclick = (e) => { const b = e.target.closest("button"); if (b) saveSetting("highlights", b.dataset.v); };
+$("#btn-hl").onclick = () => api("/api/highlights", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+$("#btn-apply").onclick = () => {
+  if (!confirm("Rename and move your photos now? You can undo the renaming afterwards.")) return;
+  api("/api/organize/apply", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+$("#btn-undo").onclick = () => {
+  if (!confirm("Put the files from the last organize back to their old names and folders?")) return;
+  api("/api/organize/undo", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+
+/* ------------------------------------------------------------------ inbox / edit photos */
+const R = { mode: "inbox", day: null, items: [], sel: new Set() };
+
+function openDay(day) {
+  R.mode = "day"; R.day = day;
+  showTab("inbox", true);
+}
+
+async function loadReview() {
+  let r;
+  try {
+    r = await api("/api/review", R.mode === "day" ? { day: R.day } : R.mode === "needs" ? { needs: true }
+                                 : R.mode === "set" ? { ids: R.ids } : {});
+  } catch (e) { return fail(e); }
+  const keep = new Set(R.sel);
+  const firstLoad = !R.items.length || R.loadedFor !== (R.mode + R.day + (R.mode === "set" ? R.ids.length : ""));
+  R.items = r.items;
+  R.loadedFor = R.mode + R.day + (R.mode === "set" ? R.ids.length : "");
+  R.sel = new Set(firstLoad ? R.items.map(i => i.id) : R.items.filter(i => keep.has(i.id)).map(i => i.id));
+  $("#tag-list").innerHTML = (r.tags || []).map(t => `<option value="${esc(t)}">`).join("");
+  $$("#tabs button").forEach(b => b.classList.toggle("on", R.mode === "inbox" && b.dataset.tab === "inbox"));
+  $("#rv-back").hidden = R.mode === "inbox";
+  $("#rv-steps").hidden = R.mode !== "inbox" || !R.items.length;
+  $("#rv-back").textContent = R.mode === "needs" ? "‹ Back to Organize" : "‹ Back to Browse";
+  $("#rv-title").textContent = R.mode === "day" ? "Edit " + fmtDay(R.day) : R.mode === "needs" ? "Photos that need a date or time"
+    : R.mode === "set" ? `Edit ${plural(R.ids.length, "photo")}${R.setLabel ? " — " + R.setLabel : ""}` : "Drive Preview";
+  const count = R.items.length;
+  const waiting = R.items.filter(i => i.needs).length;
+  $("#rv-sub").textContent = !count ? "" : R.mode === "needs"
+    ? "Add the date and time each was taken. Select several to set them together."
+    : R.mode === "day" || R.mode === "set"
+    ? "Tick the ones you want (all are ticked), use Name… to name them together, then Save changes."
+    : `${plural(count, "new photo")} copied to ${S.state.library.split("/").filter(Boolean).slice(-1)[0]} › _Drive Preview, still with their old names. Check what each will be renamed to, fix anything, then press Save & file.` +
+      (waiting ? ` ${plural(waiting, "photo needs", "photos need")} a date or time first.` : "");
+  $("#rv-empty").hidden = count > 0;
+  const jf = R.mode === "inbox" && R.justFiled && R.justFiled.length && !(S.state.job && !S.state.job.finished);
+  $("#rv-prune").hidden = !jf;
+  if (jf) $("#rv-prune-text").innerHTML = `<b>${plural(R.justFiled.length, "photo")} filed.</b> Want to go through them now and delete the ones you don't need?`;
+  $("#rv-bulk").hidden = !count;
+  $("#rv-save").hidden = !count;
+  $("#rv-foot").hidden = !count || R.mode === "day";
+  renderReview();
+}
+
+function renderReview() {
+  R.shown = Math.max(R.shown || 0, 150);
+  const more = R.items.length - R.shown;
+  $("#rv-list").innerHTML = R.items.slice(0, R.shown).map(rvRow).join("") +
+    (more > 0 ? `<div class="more"><button class="ghost" id="rv-more">Show ${n(Math.min(more, 150))} more of ${n(more)}</button></div>` : "");
+  const mb = $("#rv-more");
+  if (mb) mb.onclick = () => { R.shown += 150; renderReview(); };
+  updateSel();
+}
+
+function splitName(it) {
+  // new path like 2026/2026-03/2026.03.14 1030 Bequia Regatta.jpg -> pieces for the editor
+  const file = it.new.split("/").pop();
+  const dot = file.lastIndexOf(".");
+  const ext = file.slice(dot);
+  const m = file.slice(0, dot).match(/^(\d{4}\.\d{2}\.\d{2})(?: (\d{4}))?/);
+  const fixed = m ? m[0] : "";
+  const folder = it.new.includes("/") ? it.new.slice(0, it.new.length - file.length) : "";
+  return { fixed, ext, folder };
+}
+
+function rvRow(it) {
+  const p = splitName(it);
+  const sel = R.sel.has(it.id);
+  const pills = [
+    it.needs === "date" ? `<span class="pill warn">no date — add one to file it</span>` : "",
+    it.needs === "time" ? `<span class="pill warn">no time — add one, or keep date only</span>` : "",
+    it.dupe ? `<span class="pill warn">looks like a duplicate</span>` : "",
+    it.pending && !it.needs ? `<span class="pill ok">changes not saved to photo yet</span>` : "",
+  ].join("");
+  return `<div class="rv ${sel ? "" : "off"}" data-id="${it.id}">
+    <input type="checkbox" data-sel ${sel ? "checked" : ""} aria-label="Select">
+    <div class="ph" data-open><img loading="lazy" src="/thumb/${it.id}" alt=""></div>
+    <div>
+      <div class="nowname">Now: <b>${esc(it.name)}</b>${it.raw ? " + " + esc(it.raw) : ""} <span class="muted">in ${esc(folderOf(it.path) || "top of drive")}</span></div>
+      <div class="willbe">Will be renamed to:</div>
+      <div class="nm">
+        <span class="fixed">${it.needs === "date" ? `<span class="needs">Date needed</span>` : esc(p.fixed.slice(0, 10))}${it.needs === "time" ? ` <span class="needs">time?</span>` : it.needs ? "" : esc(p.fixed.slice(10))}</span>
+        <input data-f="title" value="${esc(it.name_part || "")}" placeholder="${esc(it.default_name || "Add a place or event")}" aria-label="Name">
+        <span class="ext">${esc(p.ext)}</span>
+      </div>
+      <div class="dest">${it.needs === "date" ? "Gets its name and folder once it has a date" : p.folder ? "📁 Goes in folder " + esc(folderOf(it.new)) : "Stays at the top of the drive"}</div>
+      <div class="fields">
+        <label>Date &amp; time <input type="datetime-local" step="60" data-f="taken" class="${it.needs ? "needs-in" : ""}" value="${it.needs === "date" ? "" : it.taken.slice(0, 16)}"></label>
+        ${it.needs && it.kind === "photo" ? `<button class="link fix" data-guess>Guess date…</button>` : ""}
+        ${it.needs === "date" ? `<button class="link fix" data-fix="file">Use file date (${fmtDay(it.taken)})</button>` : ""}
+        ${it.needs === "time" ? `<button class="link fix" data-fix="dateonly">Time unknown — date only</button>` : ""}
+        <span class="stars">${starsHtml(it.rating || 0, "data-rstar")}</span>
+        <button class="placebtn ${it.place ? "" : "empty"}" data-f="place">${it.place ? "📍 " + esc(it.place) : "+ Add place"}</button>
+        <span class="tags">
+          ${(it.tags || []).map(t => `<span class="chip">${esc(t)}<button data-untag="${esc(t)}" aria-label="Remove">×</button></span>`).join("")}
+          <input data-f="tag" list="tag-list" placeholder="+ tag">
+        </span>
+      </div>
+      <div class="orig">${it.raw ? `<span class="pill ok">RAW + JPEG pair</span>` : ""}${it.camera ? esc(it.camera) : ""}${pills}
+        ${it.kind === "photo" ? `${it.raw || it.camera || pills.trim() ? " · " : ""}<button class="link fix" data-match style="padding:0">Find matches…</button>` : ""}</div>
+    </div>
+  </div>`;
+}
+
+function updateSel() {
+  const total = R.items.length, k = R.sel.size;
+  $("#rv-all").checked = k === total && total > 0;
+  $("#rv-all").indeterminate = k > 0 && k < total;
+  $("#rv-count").textContent = k === total ? `All ${n(total)} selected` : `${n(k)} of ${n(total)} selected`;
+  $$("[data-bulk]").forEach(b => (b.disabled = !k));
+  const ready = R.items.filter(i => !i.needs).length;
+  $("#rv-save").textContent = R.mode === "inbox" ? `Save & file ${plural(ready, "photo")}` : "Save changes";
+  $("#rv-save").disabled = !ready;
+}
+
+function replaceItems(updated) {
+  const byId = new Map(updated.map(i => [i.id, i]));
+  R.items = R.items.map(i => byId.has(i.id) ? Object.assign({}, i, byId.get(i.id), { dupe: i.dupe }) : i);
+  R.items.sort((a, b) => (a.taken < b.taken ? -1 : a.taken > b.taken ? 1 : 0));
+  renderReview();
+}
+
+async function edit(ids, body, msg) {
+  try {
+    const r = await api("/api/edit", Object.assign({ ids }, body));
+    replaceItems(r.items);
+    if (msg) toast(msg);
+    loadFilters();
+  } catch (e) { fail(e); }
+}
+
+const rowOf = (el) => R.items.find(i => i.id === +el.closest(".rv").dataset.id);
+
+$("#rv-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".rv"); if (!row) return;
+  const it = rowOf(row);
+  if (e.target.matches("[data-sel]")) {
+    e.target.checked ? R.sel.add(it.id) : R.sel.delete(it.id);
+    row.classList.toggle("off", !e.target.checked);
+    return updateSel();
+  }
+  if (e.target.closest("[data-open]")) return openViewer(R.items, R.items.indexOf(it));
+  if (e.target.closest("[data-match]")) return openMatcher(it, () => { loadReview(); refreshState(); });
+  if (e.target.closest("[data-guess]")) return openGuesser(it, () => { loadReview(); refreshState(); });
+  const rs = e.target.closest("[data-rstar]");
+  if (rs) return edit([it.id], { rating: +rs.dataset.rstar === it.rating ? 0 : +rs.dataset.rstar });
+  const fx = e.target.closest("[data-fix]");
+  if (fx) return edit([it.id], fx.dataset.fix === "file" ? { use_file_date: true } : { date_only: true });
+  const un = e.target.closest("[data-untag]");
+  if (un) return edit([it.id], { remove_tags: [un.dataset.untag] });
+  if (e.target.closest('[data-f="place"]')) {
+    return openPicker([it.id], "Place for " + it.name, reloadRows([it.id]), it.place);
+  }
+});
+$("#rv-list").addEventListener("change", (e) => {
+  const f = e.target.dataset.f; if (!f) return;
+  const it = rowOf(e.target);
+  if (f === "title" && e.target.value !== (it.name_part || "")) edit([it.id], { title: e.target.value });
+  if (f === "taken" && e.target.value && (it.needs || e.target.value !== it.taken.slice(0, 16))) edit([it.id], { taken: e.target.value });
+});
+$("#rv-list").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const f = e.target.dataset.f;
+  if (f === "title") e.target.blur();
+  if (f === "tag") {
+    const it = rowOf(e.target);
+    const tags = e.target.value.split(",").map(t => t.trim()).filter(Boolean);
+    if (tags.length) edit([it.id], { add_tags: tags });
+  }
+});
+
+function reloadRows(ids) {
+  return async () => {
+    try { replaceItems((await api("/api/review", { ids })).items); refreshState(); } catch (e) { fail(e); }
+  };
+}
+
+$("#rv-all").onchange = (e) => {
+  R.sel = new Set(e.target.checked ? R.items.map(i => i.id) : []);
+  renderReview();
+};
+$("#rv-prune-go").onclick = () => { const ids = R.justFiled; R.justFiled = null; $("#rv-prune").hidden = true; openPickSet(ids, "just filed"); };
+$("#rv-back").onclick = () => { const to = R.mode === "needs" ? "organize" : "browse"; R.mode = "inbox"; showTab(to); };
+$("#rv-save").onclick = () => {
+  if (R.mode === "inbox") R.justFiled = R.items.filter(i => !i.needs).map(i => i.id);
+  const waiting = R.items.filter(i => i.needs).length;
+  if (waiting && !confirm(`${plural(waiting, "photo still needs", "photos still need")} a date or time and will wait here. Save and file the others now?`)) return;
+  const ids = R.items.filter(i => !i.needs).map(i => i.id);
+  api("/api/organize/apply", { ids }).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+$("#rv-later").onclick = async () => {
+  if (!confirm("Take these photos out of Drive Preview without renaming them? You can still organize them later.")) return;
+  try { await api("/api/review/done", { ids: R.items.map(i => i.id) }); refreshState(); loadReview(); } catch (e) { fail(e); }
+};
+
+/* bulk actions */
+const selected = () => R.items.filter(i => R.sel.has(i.id));
+let bulkSave = null;
+function openBulk(title, html, note, save) {
+  $("#bk-title").textContent = title;
+  $("#bk-body").innerHTML = html;
+  $("#bk-note").textContent = note || "";
+  bulkSave = save;
+  $("#bulk").hidden = false;
+  setTimeout(() => { const i = $("#bk-body input"); if (i) i.focus(); }, 30);
+}
+$("#bk-close").onclick = () => ($("#bulk").hidden = true);
+$("#bk-save").onclick = async () => { if (bulkSave) { await bulkSave(); } $("#bulk").hidden = true; };
+$("#bk-body").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#bk-save").click(); });
+
+function isoToMs(v) {  // local wall-clock -> comparable number, no time zone surprises
+  const [d, t] = v.split("T");
+  const [y, m, dd] = d.split("-").map(Number);
+  const [hh, mm, ss] = (t || "0:0:0").split(":").map(Number);
+  return Date.UTC(y, m - 1, dd, hh, mm, ss || 0);
+}
+
+$("#rv-bulk").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-bulk]"); if (!b) return;
+  const items = selected(); if (!items.length) return;
+  const ids = items.map(i => i.id);
+  const who = items.length === 1 ? "this photo" : `these ${n(items.length)} photos`;
+  if (b.dataset.bulk === "name") {
+    const current = items[0].name_part || items[0].default_name || "";
+    openBulk("Name " + who,
+      `<div class="bk-row"><label>Location and event</label><input id="bk-in" value="${esc(current)}" placeholder="e.g. Bequia Regatta"></div>`,
+      "Leave blank to use the place name.",
+      () => edit(ids, { title: $("#bk-in").value }, `Named ${plural(ids.length, "photo")}.`));
+  }
+  if (b.dataset.bulk === "date") {
+    const first = items[0];
+    const many = items.length > 1;
+    openBulk("Date & time for " + who,
+      `<div class="bk-row"><label>${many ? `The earliest selected photo says <b>${fmtWhen(first.taken)}</b>. It should be:` : "Taken on:"}</label>
+       <input id="bk-in" type="datetime-local" step="60" value="${first.taken.slice(0, 16)}"></div>`,
+      many ? "The others move by the same amount, so they stay in order — handy when the camera clock was wrong." : "",
+      () => {
+        const v = $("#bk-in").value; if (!v) return;
+        if (!many) return edit(ids, { taken: v }, "Date updated.");
+        const shift = Math.round((isoToMs(v + ":00") - isoToMs(first.taken)) / 1000);
+        if (shift) return edit(ids, { shift }, `Moved ${plural(ids.length, "photo")} by ${fmtShift(shift)}.`);
+      });
+  }
+  if (b.dataset.bulk === "place") {
+    openPicker(ids, "Place for " + who, reloadRows(ids), items[0].place);
+  }
+  if (b.dataset.bulk === "group") {
+    return openGrouper(ids, items, (r) => { replaceItems(r.items); toast(`Added ${plural(ids.length, "item")} to “${r.group}”.`); refreshState(); });
+  }
+  if (b.dataset.bulk === "tag") {
+    const have = [...new Set(items.flatMap(i => i.tags || []))];
+    openBulk("Tag " + who,
+      `<div class="bk-row"><label>People or anything else — separate with commas</label>
+       <input id="bk-in" list="tag-list" placeholder="e.g. Hugh, Sarah"></div>
+       ${have.length ? `<div class="bk-row"><label>Already on some of them (click to remove from all selected)</label>
+       <div class="tags">${have.map(t => `<span class="chip">${esc(t)}<button data-bk-untag="${esc(t)}">×</button></span>`).join("")}</div></div>` : ""}`,
+      "",
+      () => {
+        const tags = $("#bk-in").value.split(",").map(t => t.trim()).filter(Boolean);
+        if (tags.length) return edit(ids, { add_tags: tags }, `Tagged ${plural(ids.length, "photo")}.`);
+      });
+  }
+});
+$("#bk-body").addEventListener("click", (e) => {
+  const u = e.target.closest("[data-bk-untag]"); if (!u) return;
+  edit(selected().map(i => i.id), { remove_tags: [u.dataset.bkUntag] }, `Removed “${u.dataset.bkUntag}”.`);
+  u.closest(".chip").remove();
+});
+
+function fmtShift(sec) {
+  const sign = sec < 0 ? "−" : "+";
+  let a = Math.abs(sec);
+  const d = Math.floor(a / 86400); a -= d * 86400;
+  const h = Math.floor(a / 3600); a -= h * 3600;
+  const m = Math.round(a / 60);
+  return sign + [d ? d + "d" : "", h ? h + "h" : "", m ? m + "m" : ""].filter(Boolean).join(" ");
+}
+
+/* ------------------------------------------------------------------ add to group */
+const G = { ids: [], items: [], groups: [], chosen: null, done: null };
+
+async function openGrouper(ids, items, done) {
+  G.ids = ids; G.items = items; G.done = done; G.chosen = null;
+  $("#gp-title").textContent = `Add ${items.length === 1 ? (items[0].kind === "video" ? "this video" : "this photo") : plural(items.length, "item")} to a group`;
+  $("#gp-q").value = "";
+  $("#gp-opts").hidden = true;
+  $("#gp-save").disabled = true;
+  $("#gp-list").innerHTML = `<p class="muted small">Loading your groups…</p>`;
+  $("#grouper").hidden = false;
+  setTimeout(() => $("#gp-q").focus(), 30);
+  try { G.groups = await api("/api/groups"); } catch (e) { return fail(e); }
+  renderGroups();
+}
+
+function fmtRange(a, b) {
+  const d1 = fmtDay(a), d2 = fmtDay(b);
+  return d1 === d2 ? d1 : `${d1} – ${d2}`;
+}
+
+function renderGroups() {
+  const q = $("#gp-q").value.trim().toLowerCase();
+  const list = G.groups.filter(g => !q || g.name.toLowerCase().includes(q) || (g.place || "").toLowerCase().includes(q) || g.start.startsWith(q)).slice(0, 80);
+  $("#gp-list").innerHTML = list.length ? list.map(g => `
+    <button class="gp ${G.chosen && G.chosen.key === g.key ? "on" : ""}" data-key="${esc(g.key)}">
+      <span class="th">${g.thumbs.map(id => `<img loading="lazy" src="/thumb/${id}" alt="">`).join("")}</span>
+      <span><b>${esc(g.name)}</b>
+        <span class="m">${fmtRange(g.start, g.end)} · ${plural(g.count, "item")}${g.place ? " · " + esc(g.place) : ""}</span></span>
+    </button>`).join("")
+    : `<p class="muted small">No groups match. Groups are photos that share a name — give some photos a name first.</p>`;
+}
+
+$("#gp-q").addEventListener("input", renderGroups);
+$("#gp-list").onclick = (e) => {
+  const b = e.target.closest(".gp"); if (!b) return;
+  G.chosen = G.groups.find(g => g.key === b.dataset.key);
+  renderGroups();
+  $("#gp-opts").hidden = false;
+  $("#gp-chosen").textContent = `${G.chosen.name} · ${fmtRange(G.chosen.start, G.chosen.end)}`;
+  $("#gp-when").value = G.chosen.start.slice(0, 16);
+  $("#gp-when-note").textContent = G.items.length > 1
+    ? "The earliest one goes here; the rest follow in their original order and spacing."
+    : "Change the time if you know when it was taken.";
+  $("#gp-save").disabled = false;
+  $("#gp-save").textContent = `Add to “${G.chosen.name}”`;
+};
+$("#gp-close").onclick = () => ($("#grouper").hidden = true);
+$("#gp-save").onclick = async () => {
+  if (!G.chosen) return;
+  const keep = $('input[name="gp-date"]:checked').value === "keep";
+  try {
+    const r = await api("/api/add-to-group", { ids: G.ids, key: G.chosen.key, taken: keep ? null : $("#gp-when").value, keep_dates: keep });
+    $("#grouper").hidden = true;
+    if (G.done) G.done(r);
+  } catch (e) { fail(e); }
+};
+
+/* ------------------------------------------------------------------ find matches */
+const MT = { me: null, done: null, res: null };
+
+function openMatcher(it, done) {
+  MT.me = it; MT.done = done;
+  $("#mt-me").src = "/thumb/" + it.id;
+  $("#mt-sub").textContent = "";
+  $("#mt-list").innerHTML = "";
+  $("#matcher").hidden = false;
+  setTimeout(() => $("#mt-name").focus(), 30);
+}
+async function runMatcher() {
+  $("#mt-sub").textContent = "Looking…";
+  $("#mt-list").innerHTML = "";
+  try {
+    MT.res = await api("/api/matches", { id: MT.me.id, name: $("#mt-name").value.trim(),
+                                          year: $("#mt-year").value.trim(), place: $("#mt-place").value.trim() });
+  } catch (e) { $("#mt-sub").textContent = e.message; return; }
+  const r = MT.res;
+  const good = r.matches.filter(m => m.score >= 0.55);
+  $("#mt-sub").textContent = `Compared with ${plural(r.looked_at, "photo")}. ` +
+    (good.length ? "Closest first — rotated scans count too." : "Nothing looks like this photo there.");
+  const dims = (o) => [o.width ? `${o.width}×${o.height}` : "", fmtSize(o.size)].filter(Boolean).join(" · ");
+  $("#mt-list").innerHTML = good.map(m => `
+    <div class="mt" data-id="${m.id}">
+      <img src="/thumb/${m.id}" alt="">
+      <div>
+        <div class="lbl2 ${m.score >= 0.9 ? "hi" : ""}">${m.label} · ${Math.round(m.score * 100)}%</div>
+        <div class="meter"><div style="width:${Math.round(m.score * 100)}%"></div></div>
+        <div class="small"><b>${esc(m.name)}</b> <span class="muted">${esc(folderOf(m.folder + "/x"))}</span></div>
+        <div class="small muted">${m.date_source === "file" ? "no date" : fmtWhen(m.taken)} · ${dims(m)}${m.place ? " · " + esc(m.place) : ""}${m.tags.length ? " · " + esc(m.tags.join(", ")) : ""}</div>
+        <div class="acts">
+          <button class="ghost" data-act="copy">Copy its date &amp; place to yours</button>
+          <button class="ghost" data-act="keepme">Same photo — keep yours</button>
+          <button class="ghost" data-act="keepit">Same photo — keep this one</button>
+        </div>
+      </div>
+    </div>`).join("");
+}
+$("#mt-go").onclick = runMatcher;
+["#mt-name", "#mt-year", "#mt-place"].forEach(s => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") runMatcher(); }));
+$("#mt-close").onclick = () => ($("#matcher").hidden = true);
+$("#mt-list").onclick = async (e) => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const other = +b.closest(".mt").dataset.id, me = MT.me.id;
+  const key = [me, other].sort((a, c) => a - c).join(",");
+  try {
+    if (b.dataset.act === "copy") {
+      await api("/api/copy-details", { to: me, from: other });
+      toast("Copied its date, place and name to your photo.");
+    } else if (b.dataset.act === "keepme") {
+      await api("/api/dupes/resolve", { key, keep: [me], aside: [other] });
+      toast("Kept yours. The other copy is in _Set aside — anything useful from it was copied over.");
+    } else {
+      await api("/api/dupes/resolve", { key, keep: [other], aside: [me] });
+      toast("Kept the one already in your library. Yours is in _Set aside.");
+    }
+    $("#matcher").hidden = true;
+    refreshState();
+    if (MT.done) MT.done();
+  } catch (err) { fail(err); }
+};
+
+/* ------------------------------------------------------------------ guess a date */
+const GS = { me: null, done: null };
+function openGuesser(it, done) {
+  GS.me = it; GS.done = done;
+  $("#gs-me").src = "/thumb/" + it.id;
+  $("#gs-sub").textContent = ""; $("#gs-list").innerHTML = "";
+  $("#guesser").hidden = false;
+  runGuesser();
+}
+async function runGuesser() {
+  $("#gs-sub").textContent = "Looking for photos like this one…";
+  $("#gs-list").innerHTML = "";
+  let r;
+  try {
+    r = await api("/api/guess-date", { id: GS.me.id, name: $("#gs-name").value.trim(),
+                                        year: $("#gs-year").value.trim(), place: $("#gs-place").value.trim() });
+  } catch (e) { $("#gs-sub").textContent = e.message; return; }
+  $("#gs-sub").textContent = r.guesses.length
+    ? `Compared with ${plural(r.looked_at, "dated photo")}. Most likely first — check the thumbnails and pick one, or adjust the date.`
+    : `Compared with ${plural(r.looked_at, "dated photo")} and nothing looked like it. Try a different tag, or clear the filters to look everywhere.`;
+  $("#gs-list").innerHTML = r.guesses.map((g, k) => `
+    <div class="gs">
+      <div class="gs-head">
+        <b>${k === 0 ? "Best guess: " : ""}${g.from === g.to ? fmtDay(g.from) : "Around " + fmtRange(g.from, g.to)}</b>
+        <span class="muted small">${plural(g.count, "similar photo")}${g.name ? " · " + esc(g.name) : ""} · ${Math.round(g.best * 100)}% alike</span>
+      </div>
+      <div class="strip">${g.photos.map(p => `<img src="/thumb/${p.id}" title="${esc(p.name)} — ${fmtDay(p.taken)}" alt="">`).join("")}</div>
+      <div class="gs-use">
+        <input type="date" value="${g.date}" data-date>
+        <button class="primary" data-use>Use this date</button>
+        <span class="muted small">Saved as date only — add a time later if you know it.</span>
+      </div>
+    </div>`).join("");
+}
+$("#gs-go").onclick = runGuesser;
+["#gs-name", "#gs-year", "#gs-place"].forEach(s => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") runGuesser(); }));
+$("#gs-close").onclick = () => ($("#guesser").hidden = true);
+$("#gs-list").onclick = async (e) => {
+  const b = e.target.closest("[data-use]"); if (!b) return;
+  const d = b.closest(".gs").querySelector("[data-date]").value;
+  if (!d) return;
+  try {
+    await api("/api/set-date-only", { ids: [GS.me.id], date: d });
+    $("#guesser").hidden = true;
+    toast(`Dated ${fmtDay(d)}.`);
+    refreshState();
+    if (GS.done) GS.done();
+  } catch (err) { fail(err); }
+};
+
+/* ------------------------------------------------------------------ people */
+const PP = { o: null, detail: null, sel: {} };
+
+async function loadPeople() {
+  $("#pp-main").hidden = false; $("#pp-detail").hidden = true;
+  let o;
+  try { o = PP.o = await api("/api/people"); } catch (e) { return fail(e); }
+  $("#pp-setup").hidden = o.on;
+  $("#pp-scan").hidden = !o.on;
+  $("#pp-sub").textContent = o.on
+    ? `Faces found in ${n(o.scanned)} of ${plural(o.photos, "photo")} · ${plural(o.faces, "face")}` + (o.ready ? "" : " · face recognition isn't available in this copy of Picture Perfect — download the latest version")
+    : "Tag the people in your photos automatically.";
+  // suggestions to check
+  const sug = o.people.filter(p => p.suggested > 0);
+  $("#pp-check-wrap").hidden = !sug.length;
+  $("#b-people").textContent = sug.length || o.groups.length ? n(sug.reduce((a, p) => a + p.suggested, 0) + o.groups.length) : "";
+  $("#pp-check").innerHTML = sug.map(p => `
+    <div class="checkrow" data-pid="${p.id}">
+      <div class="fstrip" data-sug-strip="${p.id}"></div>
+      <div class="q"><b>Is this ${esc(p.name)}?</b><br><span class="small muted">${plural(p.suggested, "new photo")}</span></div>
+      <button class="ghost" data-act="review">Check them</button>
+      <button class="primary" data-act="yesall">Yes to all</button>
+    </div>`).join("");
+  sug.forEach(async p => {
+    const faces = await api("/api/people/faces", { person: p.id, status: "suggested" });
+    const el = $(`[data-sug-strip="${p.id}"]`);
+    if (el) el.innerHTML = faces.slice(0, 8).map(f => `<img src="/face/${f.id}" alt="">`).join("");
+    p._faces = faces;
+  });
+  // people
+  const named = o.people.filter(p => p.photos > 0 || p.suggested > 0);
+  $("#pp-people-wrap").hidden = !named.length;
+  $("#pp-people").innerHTML = named.map(p => `
+    <div class="person" data-pid="${p.id}">
+      ${p.cover ? `<img src="/face/${p.cover}" alt="">` : `<img src="/static/placeholder.svg" alt="">`}
+      <b>${esc(p.name)}</b>
+      <span class="m">${plural(p.photos, "photo")}${p.suggested ? ` · <span class="sug">${n(p.suggested)} to check</span>` : ""}</span>
+    </div>`).join("");
+  // unnamed groups
+  $("#pp-groups-wrap").hidden = !o.groups.length;
+  const names = o.people.map(p => `<option value="${esc(p.name)}">`).join("");
+  $("#tag-list").insertAdjacentHTML("beforeend", "");
+  $("#pp-groups").innerHTML = o.groups.map(g => `
+    <div class="pgroup" data-cluster="${g.cluster}">
+      <div class="fstrip">${g.faces.map(f => `<img src="/face/${f}" alt="">`).join("")}</div>
+      <div class="namebox">
+        <input placeholder="Who is this?" list="pp-names" data-name>
+        <button class="primary" data-act="name">Save</button>
+        <button class="ghost" data-act="check">Check faces</button>
+        <button class="link" data-act="ignore">Don't know them</button>
+      </div>
+      <div class="cnt">${plural(g.count, "photo")}</div>
+    </div>`).join("") + `<datalist id="pp-names">${names}</datalist>`;
+  $("#pp-singles").textContent = o.singles ? `${plural(o.singles, "other face")} ${o.singles === 1 ? "appears" : "appear"} only once — they'll join a group when more photos of them turn up.` : "";
+}
+
+$("#pp-setup-go").onclick = () => api("/api/people/setup", {}).then(() => { S.lastJobFinished = false; refreshState(); toast("Setting up — you can keep using the app while it looks for faces."); }).catch(fail);
+$("#pp-scan").onclick = () => api("/api/people/scan", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+
+$("#pp-check").onclick = async (e) => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const pid = +b.closest(".checkrow").dataset.pid;
+  const p = PP.o.people.find(x => x.id === pid);
+  if (b.dataset.act === "review") return openDetail({ kind: "suggested", pid, name: p.name });
+  const faces = p._faces || await api("/api/people/faces", { person: pid, status: "suggested" });
+  try { await api("/api/people/confirm", { faces: faces.map(f => f.id), yes: true }); toast(`Tagged ${plural(faces.length, "photo")} as ${p.name}.`); loadPeople(); }
+  catch (err) { fail(err); }
+};
+$("#pp-people").onclick = (e) => {
+  const c = e.target.closest(".person"); if (!c) return;
+  const p = PP.o.people.find(x => x.id === +c.dataset.pid);
+  openDetail({ kind: "person", pid: p.id, name: p.name });
+};
+$("#pp-groups").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches("[data-name]")) e.target.closest(".pgroup").querySelector('[data-act="name"]').click(); });
+$("#pp-groups").onclick = async (e) => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const card = b.closest(".pgroup"); const cluster = +card.dataset.cluster;
+  try {
+    if (b.dataset.act === "name") {
+      const name = card.querySelector("[data-name]").value.trim();
+      if (!name) return toast("Type a name first.");
+      const r = await api("/api/people/name", { cluster, name });
+      toast(`Tagged ${plural(r.named, "photo")} as ${name}.`);
+      loadPeople();
+    } else if (b.dataset.act === "ignore") {
+      await api("/api/people/ignore", { cluster });
+      card.remove();
+    } else {
+      openDetail({ kind: "cluster", cluster, name: card.querySelector("[data-name]").value.trim() });
+    }
+  } catch (err) { fail(err); }
+};
+
+async function openDetail(d) {
+  PP.detail = d; PP.sel = {};
+  $("#pp-main").hidden = true; $("#pp-detail").hidden = false;
+  let faces;
+  try {
+    faces = d.kind === "cluster" ? await api("/api/people/faces", { cluster: d.cluster })
+      : await api("/api/people/faces", { person: d.pid, status: d.kind === "suggested" ? "suggested" : "confirmed" });
+  } catch (e) { return fail(e); }
+  d.faces = faces;
+  faces.forEach(f => (PP.sel[f.id] = true));
+  if (d.kind === "person") {
+    $("#pp-d-title").textContent = d.name;
+    $("#pp-d-sub").textContent = `${plural(faces.length, "photo")}. Click × on any face that isn't ${d.name}.`;
+    $("#pp-d-actions").innerHTML = `<input id="pp-rename" value="${esc(d.name)}" list="pp-names">
+      <button class="ghost" data-dact="rename">Rename</button>
+      <button class="ghost" data-dact="browse">See their photos</button>
+      <button class="link" data-dact="forget">Forget ${esc(d.name)}</button>`;
+  } else if (d.kind === "suggested") {
+    $("#pp-d-title").textContent = `Is this ${d.name}?`;
+    $("#pp-d-sub").textContent = "Untick any that aren't them, then save.";
+    $("#pp-d-actions").innerHTML = `<button class="primary" data-dact="confirm">Save</button>`;
+  } else {
+    $("#pp-d-title").textContent = "Who is this?";
+    $("#pp-d-sub").textContent = "Untick any faces that don't belong, then give the rest a name.";
+    $("#pp-d-actions").innerHTML = `<input id="pp-cname" placeholder="Name" list="pp-names" value="${esc(d.name || "")}">
+      <button class="primary" data-dact="namesel">Name ticked faces</button>
+      <button class="link" data-dact="ignoresel">Don't know them</button>`;
+  }
+  renderDetailGrid();
+}
+function renderDetailGrid() {
+  const d = PP.detail;
+  const toggles = d.kind !== "person";
+  $("#pp-d-grid").innerHTML = d.faces.map(f => `
+    <div class="fc ${PP.sel[f.id] ? "" : "off"}" data-face="${f.id}" data-file="${f.file_id}">
+      <img src="/face/${f.id}" alt="" data-open>
+      ${toggles ? `<button class="${PP.sel[f.id] ? "fy" : "fx"}" data-toggle>${PP.sel[f.id] ? "✓" : "×"}</button>`
+                : `<button class="fx" data-notthem title="Not ${esc(d.name)}">×</button>`}
+    </div>`).join("");
+}
+$("#pp-d-grid").onclick = async (e) => {
+  const fc = e.target.closest(".fc"); if (!fc) return;
+  const fid = +fc.dataset.face;
+  if (e.target.closest("[data-open]")) {
+    try { const f = await api("/api/file/" + fc.dataset.file); openViewer([f], 0); } catch (err) { fail(err); }
+    return;
+  }
+  if (e.target.closest("[data-toggle]")) { PP.sel[fid] = !PP.sel[fid]; return renderDetailGrid(); }
+  if (e.target.closest("[data-notthem]")) {
+    try { await api("/api/people/confirm", { faces: [fid], yes: false }); fc.remove(); toast(`Removed from ${PP.detail.name}.`); }
+    catch (err) { fail(err); }
+  }
+};
+$("#pp-d-actions").onclick = async (e) => {
+  const b = e.target.closest("[data-dact]"); if (!b) return;
+  const d = PP.detail;
+  const on = d.faces.filter(f => PP.sel[f.id]).map(f => f.id);
+  const off = d.faces.filter(f => !PP.sel[f.id]).map(f => f.id);
+  try {
+    if (b.dataset.dact === "rename") {
+      const name = $("#pp-rename").value.trim();
+      const r = await api("/api/people/rename", { person: d.pid, name });
+      toast(r.person !== d.pid ? `Merged into ${name}.` : `Renamed to ${name}.`);
+      return openDetail({ kind: "person", pid: r.person, name });
+    }
+    if (b.dataset.dact === "browse") {
+      PP.detail = null; showTab("browse");
+      $("#f-name").value = d.name; return loadBrowse(true);
+    }
+    if (b.dataset.dact === "forget") {
+      if (!confirm(`Remove the name ${d.name} from all photos? The faces stay, unnamed.`)) return;
+      await api("/api/people/forget", { person: d.pid });
+    }
+    if (b.dataset.dact === "confirm") {
+      if (on.length) await api("/api/people/confirm", { faces: on, yes: true });
+      if (off.length) await api("/api/people/confirm", { faces: off, yes: false });
+      toast(`Tagged ${plural(on.length, "photo")} as ${d.name}.`);
+    }
+    if (b.dataset.dact === "namesel") {
+      const name = $("#pp-cname").value.trim();
+      if (!name) return toast("Type a name first.");
+      if (!on.length) return toast("Tick at least one face.");
+      await api("/api/people/name", { faces: on, name });
+      toast(`Tagged ${plural(on.length, "photo")} as ${name}.`);
+    }
+    if (b.dataset.dact === "ignoresel") {
+      await api("/api/people/ignore", { faces: on });
+    }
+    PP.detail = null; loadPeople();
+  } catch (err) { fail(err); }
+};
+$("#pp-back").onclick = () => { PP.detail = null; loadPeople(); };
+
+/* ------------------------------------------------------------------ start */
+(async function start() {
+  try {
+    const st = await refreshState();
+    if (!st.library) showSetup(st);
+    else {
+      if (st.job && !st.job.finished) S.lastJobFinished = false;
+      await loadFilters();
+      showTab("browse");
+    }
+  } catch (e) { fail(e); }
+  poll();
+})();

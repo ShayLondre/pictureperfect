@@ -903,8 +903,8 @@ class Geo:
                 folded = self._names_folded = [fold(e[2]) for e in self.names]
             for key, e in zip(folded, self.names):
                 r = rank(key)
-                if r is not None:
-                    hits.append((r, -e[5], {"name": e[2], "lat": e[0], "lon": e[1],
+                if r is not None:   # real towns before districts or provinces of the same name
+                    hits.append((r, -(e[5] + (2000000 if e[5] >= 50000 else 0)), {"name": e[2], "lat": e[0], "lon": e[1],
                                             "kind": "Neighbourhood" if e[6] else "Town",
                                             "label": ", ".join(x for x in (e[2], e[3], e[4]) if x),
                                             "zoom": 13 if e[5] < 100000 else 11}))

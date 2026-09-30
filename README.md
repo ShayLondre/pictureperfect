@@ -9,7 +9,7 @@ Your own app for sorting, de-duplicating, naming and pruning your photos. It run
 3. Open it. **The first time only**, macOS says it can't check the app for malware, because it isn't from the App Store. Click **Done**, open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Picture Perfect.
 4. If your Mac asks whether Picture Perfect may access files on a removable volume, or control Finder (used for moving deleted photos to the Trash), click **Allow**.
 
-To update, download the newest zip and replace the app in Applications. Your settings and the catalog on your drive are kept.
+**Updates are automatic** (from version 1.7.5): each time you open the app it checks for a newer version and downloads it in the background. When it's ready, a note in the sidebar says **Version … is ready** — press **Restart to update** and the app reopens as the new version a few seconds later. Your settings and the catalog on your drive are kept.
 
 The app is built for Apple silicon Macs (M1 and newer).
 

@@ -880,3 +880,14 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
 .frrow input { flex: 1; min-width: 0; }
 .tu-left .opt, .panel .opt { flex-wrap: nowrap; align-items: flex-start; }
 .tu-left .opt input[type=checkbox], .panel .opt input[type=checkbox] { flex: none; margin-top: 2px; }
+.pl-detail { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 4; width: min(620px, calc(100% - 120px));
+  display: flex; align-items: center; gap: 12px; background: var(--panel); border-radius: 12px; box-shadow: 0 6px 22px rgba(0,0,0,.18);
+  padding: 10px 12px 10px 16px; font-size: 13px; }
+.pl-detail .grow { flex: 1; min-width: 0; }
+.pl-detail .dark { flex: none; padding: 8px 14px; font-size: 13px; }
+.pl-net { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.pl-net::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #9aa19e; }
+.pl-net.on::before { background: #2ea36b; }
+.pl-minelist { display: flex; flex-direction: column; gap: 6px; margin-top: 18px; text-align: left; }
+.pl-minelist .ghost { text-align: left; }
+.pl-minelist h5 { margin: 0 0 2px; font-size: 13px; color: var(--ink); }

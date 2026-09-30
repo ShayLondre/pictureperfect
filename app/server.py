@@ -511,6 +511,19 @@ def places_warm():
     return jsonify({"ok": True})
 
 
+@app.route("/api/places/online")
+def places_online():
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify([])
+    try:
+        res = search_places_online(q, limit=8)
+    except Exception:
+        abort(503, "Couldn't reach the online search. Check the internet connection.")
+    return jsonify([dict(r, label=r.get("detail") or r["label"], kind="Online",
+                         zoom=17 if any(ch.isdigit() for ch in q) else 14) for r in res])
+
+
 @app.route("/api/places/details")
 def places_details():
     return jsonify(lib().geo.details(float(request.args["lat"]), float(request.args["lon"])))

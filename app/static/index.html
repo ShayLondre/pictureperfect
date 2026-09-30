@@ -342,9 +342,10 @@
         <div class="pl-results" id="pl-results" hidden></div>
       </div>
       <div class="seg pl-show" id="pl-show">
-        <button data-v="photos" class="on">Photos on map</button>
-        <button data-v="places">My Places</button>
+        <button data-v="map" class="on">Map</button>
+        <button data-v="satellite">Satellite</button>
       </div>
+      <span class="pl-net" id="pl-net"></span>
       <div class="pl-top-r">
         <div class="pl-dd">
           <button class="ghost" id="pl-offline"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 19h14"/></svg>Offline Maps <span class="caret">▾</span></button>
@@ -359,8 +360,14 @@
           <div class="pl-nomap" id="pl-nomap" hidden></div>
           <div class="pl-tools">
             <button id="pl-fit" title="Show the selected photos">⤢</button>
+            <button id="pl-save-area" title="Save this area for offline use">⤓</button>
           </div>
           <div class="pl-coords" id="pl-coords"></div>
+          <div class="pl-detail" id="pl-detail" hidden>
+            <div class="grow"><b>Only main roads here.</b> <span id="pl-detail-t">Download this area to see every road, street and building — it then works offline too.</span></div>
+            <button class="dark" id="pl-detail-go">Download this area</button>
+            <button class="pl-x" id="pl-detail-x" aria-label="Hide">×</button>
+          </div>
         </div>
         <div class="pl-strip">
           <div class="pl-strip-head">

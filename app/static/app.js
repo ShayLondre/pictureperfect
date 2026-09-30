@@ -1230,7 +1230,7 @@ $("#btn-restore").onclick = () => {
 /* ------------------------------------------------------------------ Places: offline map + geotagging */
 const PL = { map: null, mapReady: false, src: "none", photos: [], total: 0, sel: new Set(), last: null, shown: 240,
   pin: null, pinMarker: null, info: null, placeId: null, prec: "exact", tags: [], starred: false, mine: [],
-  points: [], show: "photos", ids: [], thumbs: new Map(), mineMarkers: [], sugg: null };
+  points: [], show: "photos", mode: "map", online: false, ids: [], thumbs: new Map(), mineMarkers: [], sugg: null };
 
 function loadScript(src) {
   return new Promise((ok) => {
@@ -1279,6 +1279,57 @@ function mapStyle(info) {
   return style;
 }
 
+/* online when there's internet (full detail, satellite), offline map otherwise */
+const ONLINE_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+async function plCheckOnline() {
+  if (!navigator.onLine) return (PL.online = false);
+  try {
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 5000);
+    const r = await fetch(ONLINE_STYLE, { signal: ctl.signal, cache: "no-store" });
+    clearTimeout(t);
+    if (!r.ok) throw new Error(r.status);
+    PL.onlineStyle = await r.json();
+    PL.online = true;
+  } catch (e) { PL.online = false; }
+  return PL.online;
+}
+function plStyle() {
+  if (PL.online && PL.mode === "satellite") {
+    return { version: 8, glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+      sources: { sat: { type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+        attribution: "Imagery © Esri, Maxar, Earthstar Geographics" } },
+      layers: [{ id: "sat", type: "raster", source: "sat" }] };
+  }
+  if (PL.online && PL.onlineStyle) return JSON.parse(JSON.stringify(PL.onlineStyle));
+  return mapStyle(PL.mapInfo || {});
+}
+function plCountFont() { return PL.online ? ["Noto Sans Bold"] : ["Noto Sans Medium"]; }
+function plNetLabel() {
+  const el = $("#pl-net");
+  el.classList.toggle("on", PL.online);
+  el.textContent = PL.online ? "Online map" : "Offline map";
+  el.title = PL.online ? "Full detail from the internet. Areas you save stay available offline."
+    : "No internet: showing the built-in world map and the areas you saved.";
+  $$("#pl-show button").forEach(b => { b.classList.toggle("on", b.dataset.v === PL.mode); if (b.dataset.v === "satellite") b.disabled = !PL.online; });
+  if (!PL.online) $("#pl-show button[data-v=satellite]").title = "Satellite needs internet";
+}
+function plApplyStyle() {
+  if (!PL.map) return;
+  PL.mapReady = false;
+  PL.thumbs.forEach(m => m.remove()); PL.thumbs.clear();
+  PL.map.setStyle(plStyle(), { diff: false });
+  PL.map.once("style.load", () => { PL.mapReady = true; addPhotoLayers(); renderPoints(); plRadius(); plDetailHint(); });
+  plNetLabel();
+}
+async function plRecheck() {
+  const was = PL.online;
+  await plCheckOnline();
+  if (was !== PL.online) plApplyStyle(); else plNetLabel();
+}
+window.addEventListener("online", plRecheck);
+window.addEventListener("offline", plRecheck);
+
 async function initMap() {
   if (PL.map) return true;
   const ok = await loadMapLibs();
@@ -1291,7 +1342,9 @@ async function initMap() {
     return false;
   }
   if (!PL.protocol) { PL.protocol = new pmtiles.Protocol(); maplibregl.addProtocol("pmtiles", PL.protocol.tile); }
-  const map = PL.map = new maplibregl.Map({ container: "pl-map", style: mapStyle(info), center: [-61.7, 13.5], zoom: 3,
+  await plCheckOnline();
+  plNetLabel();
+  const map = PL.map = new maplibregl.Map({ container: "pl-map", style: plStyle(), center: [-61.7, 13.5], zoom: 3,
     attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false });
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
@@ -1301,16 +1354,17 @@ async function initMap() {
   map.on("mousemove", (e) => { $("#pl-coords").textContent = fmtLatLon(e.lngLat.lat, e.lngLat.lng); });
   map.on("mouseout", () => { $("#pl-coords").textContent = ""; });
   map.on("click", (e) => {
-    if (PL.show === "photos" && map.getLayer("pl-clusters")) {
+    if (map.getLayer("pl-clusters")) {
       const hit = map.queryRenderedFeatures(e.point, { layers: ["pl-clusters", "pl-dots"] });
       if (hit.length) return plClickPhotos(hit[0]);
     }
     plSetPin(e.lngLat.lat, e.lngLat.lng, { prec: "exact" });
   });
   map.on("moveend", plThumbs);
+  map.on("moveend", plDetailHint);
   map.on("mouseenter", "pl-clusters", () => (map.getCanvas().style.cursor = "pointer"));
   map.on("mouseleave", "pl-clusters", () => (map.getCanvas().style.cursor = ""));
-  if (!info.world && !(info.regions || []).length) {
+  if (!PL.online && !info.world && !(info.regions || []).length) {
     $("#pl-nomap").hidden = false;
     $("#pl-nomap").innerHTML = `<div><b>No map downloaded yet.</b><br>Use Offline Maps to add one. Search and coordinates still work.</div>`;
   }
@@ -1324,7 +1378,7 @@ function addPhotoLayers() {
     paint: { "circle-color": "#1f6f6a", "circle-opacity": 0.88, "circle-stroke-color": "#fff", "circle-stroke-width": 2,
       "circle-radius": ["step", ["get", "point_count"], 14, 20, 18, 200, 23, 1000, 28] } });
   map.addLayer({ id: "pl-count", type: "symbol", source: "pl-photos", filter: ["has", "point_count"],
-    layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Noto Sans Medium"], "text-size": 12, "text-allow-overlap": true },
+    layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": plCountFont(), "text-size": 12, "text-allow-overlap": true },
     paint: { "text-color": "#fff" } });
   map.addLayer({ id: "pl-dots", type: "circle", source: "pl-photos", filter: ["!", ["has", "point_count"]],
     paint: { "circle-radius": 6, "circle-color": ["case", ["==", ["get", "p"], "exact"], "#1f6f6a", "#ffffff"],
@@ -1336,8 +1390,6 @@ function addPhotoLayers() {
 
 function renderPoints() {
   if (!PL.mapReady) return;
-  const vis = PL.show === "photos" ? "visible" : "none";
-  ["pl-clusters", "pl-count", "pl-dots"].forEach(id => PL.map.setLayoutProperty(id, "visibility", vis));
   PL.map.getSource("pl-photos").setData({ type: "FeatureCollection", features: PL.points.map(p => ({
     type: "Feature", geometry: { type: "Point", coordinates: [p[2], p[1]] }, properties: { id: p[0], p: p[3] } })) });
   setTimeout(plThumbs, 300);
@@ -1347,7 +1399,7 @@ function renderPoints() {
 function plThumbs() {
   if (!PL.mapReady) return;
   const map = PL.map, want = new Map();
-  if (PL.show === "photos" && map.getZoom() >= 11) {
+  if (map.getZoom() >= 11) {
     for (const f of map.queryRenderedFeatures({ layers: ["pl-dots"] })) {
       if (want.size >= 150) break;
       want.set(f.properties.id, f);
@@ -1498,11 +1550,11 @@ $("#pl-none").onclick = () => { PL.sel.clear(); renderFilm(); };
 $("#pl-src").onclick = (e) => { const b = e.target.closest("button"); if (b) plShowSource(b.dataset.v); };
 let plFilterTimer;
 $("#pl-filter").addEventListener("input", () => { clearTimeout(plFilterTimer); plFilterTimer = setTimeout(() => { PL.sel.clear(); plLoadPhotos().then(plFit); }, 300); });
-$("#pl-show").onclick = (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  PL.show = b.dataset.v;
-  $$("#pl-show button").forEach(x => x.classList.toggle("on", x === b));
-  renderPoints(); renderInsp();
+$("#pl-show").onclick = async (e) => {
+  const b = e.target.closest("button"); if (!b || b.disabled) return;
+  PL.mode = b.dataset.v;
+  await plCheckOnline();
+  plApplyStyle();
 };
 
 /* the pin and the inspector */
@@ -1561,12 +1613,11 @@ function renderInsp() {
   $("#pl-insp-empty").hidden = has;
   if (!has) {
     $("#pl-form").appendChild($("#pl-sugg"));   // keep the suggestion box safe while the empty panel is redrawn
-    const list = PL.mine.length && PL.show === "places"
-      ? `<div class="pl-minelist">${PL.mine.map(p => `<button class="ghost" data-mine="${p.id}">${p.starred ? "★ " : ""}${esc(p.name)}<span class="muted small"> · ${plural(p.photos, "photo")}</span></button>`).join("")}</div>` : "";
+    const list = PL.mine.length
+      ? `<div class="pl-minelist"><h5>My Places</h5>${PL.mine.map(p => `<button class="ghost" data-mine="${p.id}">${p.starred ? "★ " : ""}${esc(p.name)}<span class="muted small"> · ${plural(p.photos, "photo")}</span></button>`).join("")}</div>` : "";
     $("#pl-insp-empty").innerHTML = `<div class="pl-empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg></div>
-      <b>${PL.show === "places" ? "My Places" : "Choose a location"}</b>
-      <p>${PL.show === "places" ? (PL.mine.length ? "Click one to use it, or click the map to add a new one." : "Places you save — like Mom's Cabin — show up here and in search.")
-        : "Select photos below, then search for a place, pick one of My Places, or click the map to drop a pin. Drag the pin to fine-tune it."}</p>${list}`;
+      <b>Choose a location</b>
+      <p>Select photos below, then search for a place, pick one of My Places, or click the map to drop a pin. Drag the pin to fine-tune it.</p>${list}`;
     return plSelChanged();
   }
   const i = PL.info || {};
@@ -1674,6 +1725,7 @@ async function plUseSugg() {
 /* search */
 let plTimer, plSeq = 0;
 $("#pl-q").addEventListener("input", () => {
+  PL.searchedOnline = false;
   $("#pl-q-x").hidden = !$("#pl-q").value;
   clearTimeout(plTimer); plTimer = setTimeout(plSearch, 220);
 });
@@ -1692,15 +1744,31 @@ async function plSearch() {
   if (q.length < 2) { $("#pl-results").hidden = true; return; }
   const seq = ++plSeq;
   let r = [];
-  try { r = await api(`/api/places/search?q=${encodeURIComponent(q)}${navigator.onLine ? "&online=1" : ""}`); } catch (e) { r = []; }
+  try { r = await api(`/api/places/search?q=${encodeURIComponent(q)}`); } catch (e) { r = []; }
   if (seq !== plSeq) return;
   PL.results = r;
+  plShowResults(q);
+}
+function plShowResults(q, note) {
+  const r = PL.results;
   $("#pl-results").hidden = false;
-  $("#pl-results").innerHTML = r.length ? r.map((x, i) => `<button data-r="${i}"><span><b>${esc(x.name)}</b><span class="d">${esc(x.label || "")}</span></span>
+  $("#pl-results").innerHTML = (r.length ? r.map((x, i) => `<button data-r="${i}"><span><b>${esc(x.name)}</b><span class="d">${esc(x.label || "")}</span></span>
       <span class="k ${x.kind === "My place" ? "mine" : ""}">${esc(x.kind || "")}</span></button>`).join("")
-    : `<div class="none">Nothing found offline for “${esc(q)}”. Try a nearby town, or paste coordinates like 39.0963, -120.0324.</div>`;
+    : `<div class="none">Nothing found offline for “${esc(q)}”. Try a nearby town, or paste coordinates like 39.0963, -120.0324.</div>`)
+    + (note ? `<div class="none">${esc(note)}</div>` : "")
+    + (PL.online && !PL.searchedOnline ? `<button data-online="1"><span><b>Search online for “${esc(q)}”</b><span class="d">Street addresses, businesses and more</span></span><span class="k">Online</span></button>` : "");
+}
+async function plSearchOnline() {
+  const q = $("#pl-q").value.trim(); if (!q) return;
+  PL.searchedOnline = true;
+  let r = [], note = "";
+  try { r = await api(`/api/places/online?q=${encodeURIComponent(q)}`); } catch (e) { note = e.message; }
+  if (!r.length && !note) note = "Nothing more found online.";
+  PL.results = r.concat(PL.results.filter(x => !r.some(y => y.lat === x.lat && y.lon === x.lon)));
+  plShowResults(q, note);
 }
 $("#pl-results").onclick = (e) => {
+  if (e.target.closest("[data-online]")) { e.stopPropagation(); return plSearchOnline(); }
   const b = e.target.closest("[data-r]"); if (!b) return;
   const x = PL.results[+b.dataset.r];
   $("#pl-results").hidden = true;
@@ -1713,6 +1781,51 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".pl-search")) $("#pl-results").hidden = true;
   if (!e.target.closest(".pl-dd")) $("#pl-offline-menu").hidden = true;
 });
+
+/* "only main roads here" — offer to download the area on screen */
+function plCovered(lat, lon) {
+  return (PL.mapInfo && PL.mapInfo.regions || []).some(r => r.maxzoom >= 13 &&
+    lon >= r.bbox[0] && lon <= r.bbox[2] && lat >= r.bbox[1] && lat <= r.bbox[3]);
+}
+function plDetailHint() {
+  const box = $("#pl-detail");
+  if (!PL.map || PL.detailOff) { box.hidden = true; return; }
+  const c = PL.map.getCenter();
+  const show = (PL.forceSave || (!PL.online && PL.map.getZoom() >= 8 && !plCovered(c.lat, c.lng))) && PL.mapInfo && PL.mapInfo.tool;
+  if (show && box.hidden) { $("#pl-detail b").textContent = "Only main roads here."; $("#pl-detail-go").disabled = false; $("#pl-detail-go").textContent = "Download this area";
+    $("#pl-detail-t").textContent = "Download this area to see every road, street and building — it then works offline too."; PL.detailArea = null; }
+  box.hidden = !show;
+}
+$("#pl-detail-x").onclick = () => { PL.detailOff = !PL.forceSave; PL.forceSave = false; $("#pl-detail").hidden = true; };
+$("#pl-save-area").onclick = () => {
+  if (!PL.mapInfo || !PL.mapInfo.tool) return toast("Saving maps isn't available in this copy of the app.");
+  PL.forceSave = true; PL.detailOff = false; $("#pl-detail").hidden = true; plDetailHint();
+  $("#pl-detail b").textContent = plCovered(PL.map.getCenter().lat, PL.map.getCenter().lng) ? "Already saved nearby." : "Save this area for offline use.";
+  $("#pl-detail-t").textContent = "Keeps every road, street and building on screen available without internet. It's saved on your photo drive.";
+};
+$("#pl-detail-go").onclick = async () => {
+  const btn = $("#pl-detail-go"), t = $("#pl-detail-t");
+  if (PL.detailArea) {   // second click: size is known, download it
+    try { await api("/api/map/download", PL.detailArea); $("#pl-detail").hidden = true; PL.detailArea = null; PL.forceSave = false; refreshState(); }
+    catch (e) { t.textContent = e.message; }
+    return;
+  }
+  const b = PL.map.getBounds(), c = b.getCenter();
+  // at least a small town's worth around the middle, at most what's on screen
+  const w = Math.max(b.getEast() - b.getWest(), 0.12), h = Math.max(b.getNorth() - b.getSouth(), 0.08);
+  const bbox = [c.lng - w / 2, c.lat - h / 2, c.lng + w / 2, c.lat + h / 2];
+  btn.disabled = true; t.textContent = "Checking how big this area is… (needs internet)";
+  let name = "Area";
+  try { const d = await api(`/api/places/details?lat=${c.lat}&lon=${c.lng}`); if (d.city) name = "Around " + d.city; } catch (e) { /* ignore */ }
+  try {
+    const r = await api("/api/map/estimate", { bbox, maxzoom: 15 });
+    const size = r.bytes || 0;
+    if (size > 2.5e9) { t.textContent = `This area is large (about ${fmtSize(size)}). Zoom in closer to download a smaller area.`; btn.disabled = false; return; }
+    PL.detailArea = { name, bbox, maxzoom: 15 };
+    t.textContent = `${name}: about ${fmtSize(size)}. It's saved on your photo drive.`;
+    btn.textContent = "Download"; btn.disabled = false;
+  } catch (e) { t.textContent = e.message; btn.disabled = false; }
+};
 
 /* offline maps */
 $("#pl-offline").onclick = async () => {
@@ -1774,7 +1887,7 @@ function plReloadMap() {
   const c = PL.map.getCenter(), z = PL.map.getZoom();
   PL.map.remove(); PL.map = null; PL.mapReady = false;
   $("#pl-nomap").hidden = true;
-  initMap().then(() => { if (PL.map) PL.map.jumpTo({ center: c, zoom: z }); });
+  initMap().then(() => { if (PL.map) PL.map.jumpTo({ center: c, zoom: z }); plDetailHint(); });
 }
 
 /* ------------------------------------------------------------------ place picker */

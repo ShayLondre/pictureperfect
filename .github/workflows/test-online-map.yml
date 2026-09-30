@@ -1,0 +1,44 @@
+name: Test online map
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libimage-exiftool-perl > /dev/null
+          pip install -q -r app/requirements.txt playwright
+          python -m playwright install --with-deps chromium > /dev/null
+          gh release download map-assets --pattern map-assets.zip --dir /tmp && unzip -q /tmp/map-assets.zip -d /tmp/ma
+          mkdir -p app/static/vendor && cp -R /tmp/ma/vendor/map app/static/vendor/map
+      - name: Screenshots
+        run: |
+          mkdir -p /tmp/lib/2025.07 out
+          python3 -c "
+          from PIL import Image
+          for i,c in enumerate([(200,80,60),(60,120,200),(80,160,90)]):
+              Image.new('RGB',(800,600),c).save('/tmp/lib/2025.07/p%d.jpg'%i)"
+          exiftool -q -overwrite_original -DateTimeOriginal='2025:07:14 10:30:00' -GPSLatitude=39.0963 -GPSLatitudeRef=N -GPSLongitude=120.0324 -GPSLongitudeRef=W /tmp/lib/2025.07/p0.jpg
+          exiftool -q -overwrite_original -DateTimeOriginal='2025:07:15 11:00:00' /tmp/lib/2025.07/p1.jpg /tmp/lib/2025.07/p2.jpg
+          cd app && PHOTO_ORGANIZER_PORT=8799 PHOTO_ORGANIZER_NO_BROWSER=1 PO_GEO_DIR=/tmp/ma/geo PO_MAP_DIR=/tmp/ma/maps nohup python3 server.py > ../out/server.log 2>&1 &
+          sleep 4
+          curl -s -XPOST -H 'Content-Type: application/json' -d '{"path":"/tmp/lib"}' localhost:8799/api/library; sleep 20
+          cd .. && python3 packaging/tests/online_map.py out || true
+      - uses: softprops/action-gh-release@v2
+        if: always()
+        with:
+          tag_name: map-test
+          name: Map download test (not an app release)
+          prerelease: true
+          files: out/*

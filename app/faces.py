@@ -47,8 +47,10 @@ def download_model(base, job=None):
         for name in z.namelist():
             base_name = os.path.basename(name)
             if base_name in (DET_FILE, REC_FILE):
-                with z.open(name) as src, open(os.path.join(d, base_name), "wb") as dst:
+                final = os.path.join(d, base_name)
+                with z.open(name) as src, open(final + ".part", "wb") as dst:
                     shutil.copyfileobj(src, dst)
+                os.replace(final + ".part", final)   # only a complete model file ever gets its real name
     os.remove(tmp)
     if not model_ready(base):
         raise RuntimeError("The face model download didn't contain what I expected.")

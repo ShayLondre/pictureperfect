@@ -5,6 +5,7 @@ folder inside the photo library, so it travels with the drive.
 Written for Python 3.9+ (the version that ships with macOS developer tools).
 """
 import bisect
+import contextlib
 import csv
 import datetime as dt
 import hashlib
@@ -392,13 +393,29 @@ def unique_path(full):
 
 
 def move_file(src, dst):
+    """Rename/move a file, never replacing a different file that's already there."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    if src.lower() == dst.lower() and src != dst:
-        tmp = dst + ".renaming"
+    if src.lower() == dst.lower() and src != dst:   # only the capitals change (exFAT/APFS ignore case)
+        tmp = "%s.renaming-%d" % (dst, os.getpid())
+        n = 0
+        while os.path.exists(tmp):
+            n += 1
+            tmp = "%s.renaming-%d-%d" % (dst, os.getpid(), n)
         os.rename(src, tmp)
-        os.rename(tmp, dst)
-    else:
-        os.rename(src, dst)
+        try:
+            os.rename(tmp, dst)
+        except OSError:
+            os.rename(tmp, src)
+            raise
+        return
+    if os.path.exists(dst):
+        try:
+            same = os.path.samefile(src, dst)
+        except OSError:
+            same = False
+        if not same:
+            raise OSError("A file named %s is already there." % os.path.basename(dst))
+    os.rename(src, dst)
 
 
 # --------------------------------------------------------------------------- #
@@ -436,31 +453,53 @@ class ExifTool:
                 self.err_buf += line.decode("utf-8", "replace")
                 self.err_cond.notify_all()
 
-    def run(self, args, binary=False):
+    def _kill(self):
+        try:
+            if self.proc:
+                self.proc.kill()
+        except Exception:
+            pass
+        self.proc = None
+
+    def run(self, args, binary=False, timeout=180):
+        import select
         with self.lock:
             if not self.proc or self.proc.poll() is not None:
                 self._start()
-            payload = "\n".join(list(args) + ["-echo4", "{done}", "-execute"]) + "\n"
-            self.proc.stdin.write(payload.encode("utf-8"))
-            self.proc.stdin.flush()
+            self.seq = getattr(self, "seq", 0) + 1
+            n = self.seq
+            with self.err_cond:
+                self.err_buf = ""
+            payload = "\n".join(list(args) + ["-echo4", "{done%d}" % n, "-execute%d" % n]) + "\n"
+            try:
+                self.proc.stdin.write(payload.encode("utf-8"))
+                self.proc.stdin.flush()
+            except OSError:
+                self._kill()
+                raise RuntimeError("ExifTool stopped unexpectedly")
             out = b""
             fd = self.proc.stdout.fileno()
-            marker = b"{ready}"
+            marker = b"{ready%d}" % n
+            deadline = time.time() + timeout
             while True:
+                left = deadline - time.time()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    self._kill()   # a stuck file: start fresh next time instead of freezing the app
+                    raise RuntimeError("ExifTool took too long on %s" % os.path.basename(str(args[-1])))
                 chunk = os.read(fd, 1 << 16)
                 if not chunk:
                     self.proc = None
                     raise RuntimeError("ExifTool stopped unexpectedly")
                 out += chunk
-                tail = out[-20:].rstrip()
-                if tail.endswith(marker):
+                if out[-40:].rstrip().endswith(marker):
                     break
             out = out[:out.rstrip().rfind(marker)]
+            done = "{done%d}" % n
             deadline = time.time() + 15
             with self.err_cond:
-                while "{done}" not in self.err_buf and time.time() < deadline:
+                while done not in self.err_buf and time.time() < deadline:
                     self.err_cond.wait(0.25)
-                err = self.err_buf.replace("{done}", "").strip()
+                err = re.sub(r"\{done\d+\}", "", self.err_buf).strip()
                 self.err_buf = ""
             if binary:
                 return out, err
@@ -487,11 +526,39 @@ class ExifTool:
         return result
 
     def preview(self, path):
-        for tag in ("-JpgFromRaw", "-PreviewImage"):
-            data, _ = self.run(["-b", tag, path], binary=True)
-            if data and data[:2] == b"\xff\xd8":
-                return data
-        return None
+        """The JPEG a RAW file carries inside it. Several helper ExifTools share this work,
+        so previews for many photos are made at the same time."""
+        if not hasattr(self, "_pool"):
+            with self.lock:
+                if not hasattr(self, "_pool"):
+                    import queue
+                    self._pool = queue.Queue()
+                    self._pool_n = 0
+                    self._pool_lock = threading.Lock()
+                    self._tag_for = {}
+        import queue
+        try:
+            et = self._pool.get_nowait()
+        except queue.Empty:
+            with self._pool_lock:
+                grow = self._pool_n < 3
+                if grow:
+                    self._pool_n += 1
+            et = ExifTool() if grow else self._pool.get()
+            et.path = self.path
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            tags = ["-JpgFromRaw", "-PreviewImage"]
+            if self._tag_for.get(ext) == "-PreviewImage":
+                tags.reverse()
+            for tag in tags:
+                data, _ = et.run(["-b", tag, path], binary=True)
+                if data and data[:2] == b"\xff\xd8":
+                    self._tag_for[ext] = tag
+                    return data
+            return None
+        finally:
+            self._pool.put(et)
 
     def write(self, path, args):
         out, err = self.run(["-overwrite_original", "-m"] + args + [path])
@@ -794,7 +861,11 @@ def trash_files(files):
 
 
 class Job:
+    _next = [0]
+
     def __init__(self, name):
+        Job._next[0] += 1
+        self.id = "%d-%d" % (int(time.time()), Job._next[0])
         self.name = name
         self.phase = ""
         self.done = 0
@@ -808,7 +879,7 @@ class Job:
         self.phase, self.done, self.total, self.message = phase, 0, total, ""
 
     def to_dict(self):
-        return {"name": self.name, "phase": self.phase, "done": self.done, "total": self.total,
+        return {"id": self.id, "name": self.name, "phase": self.phase, "done": self.done, "total": self.total,
                 "message": self.message, "error": self.error, "finished": self.finished,
                 "result": self.result}
 
@@ -863,10 +934,20 @@ class Library:
         self.lock = threading.RLock()
         with self.lock:
             self.db.executescript(SCHEMA)
-            try:   # plain rollback journal: safest on removable exFAT drives
-                self.db.execute("PRAGMA journal_mode=DELETE")
+            try:   # plain rollback journal (safest on removable exFAT drives), kept between saves
+                self.db.execute("PRAGMA journal_mode=PERSIST")     # no create/delete of a file per save
+                self.db.execute("PRAGMA synchronous=NORMAL")
+                self.db.execute("PRAGMA temp_store=MEMORY")
+                self.db.execute("PRAGMA cache_size=-20000")
             except sqlite3.DatabaseError:
                 pass
+            for ix in ("CREATE INDEX IF NOT EXISTS files_pair ON files(pair_of)",
+                       "CREATE INDEX IF NOT EXISTS files_batch ON files(batch)",
+                       "CREATE INDEX IF NOT EXISTS files_status_taken ON files(status, taken)"):
+                try:
+                    self.db.execute(ix)
+                except sqlite3.DatabaseError:
+                    pass
             cols = {r[1] for r in self.db.execute("PRAGMA table_info(files)").fetchall()}
             for col, typ in (("tags", "TEXT"), ("tags_pending", "INTEGER DEFAULT 0"), ("batch", "TEXT"),
                              ("filedates", "INTEGER DEFAULT 0"), ("city", "TEXT"),
@@ -879,6 +960,12 @@ class Library:
         self.et = exiftool or ExifTool()
         self.geo = geo or Geo()
         self.job = None
+        self._job_lock = threading.Lock()
+        self._dupe_lock = threading.Lock()
+        self._dupe_gen = 0
+        self._dup_count = None
+        self._batch_depth = 0
+        self._uncommitted = 0
         self.pending_import = None
         self._dupes = None
         self._loc = None
@@ -895,13 +982,32 @@ class Library:
                 self.db.executemany(sql, args)
             else:
                 self.db.execute(sql, args)
-            self.db.commit()
+            self._uncommitted += 1
+            if self._batch_depth == 0 or self._uncommitted >= 300:
+                self.db.commit()
+                self._uncommitted = 0
+
+    @contextlib.contextmanager
+    def batch(self):
+        """Save the catalog once per few hundred changes instead of after every one —
+        each save is slow on an exFAT drive."""
+        with self.lock:
+            self._batch_depth += 1
+        try:
+            yield
+        finally:
+            with self.lock:
+                self._batch_depth -= 1
+                if self._batch_depth == 0:
+                    self.db.commit()
+                    self._uncommitted = 0
 
     def full(self, rel):
         return os.path.join(self.root, rel)
 
     def invalidate(self):
         self._dupes = None
+        self._dupe_gen = getattr(self, "_dupe_gen", 0) + 1
         self._loc = None
         self._gm = None
         self._raws = None
@@ -918,11 +1024,15 @@ class Library:
         self.x("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", rows, many=True)
 
     # ---------- jobs ----------
+    def busy(self):
+        return bool(self.job and not self.job.finished)
+
     def start_job(self, name, fn, *args):
-        if self.job and not self.job.finished:
-            raise RuntimeError("Please wait — '%s' is still running." % self.job.name)
-        job = Job(name)
-        self.job = job
+        with self._job_lock:
+            if self.job and not self.job.finished:
+                raise RuntimeError("Please wait — '%s' is still running." % self.job.name)
+            job = Job(name)
+            self.job = job
 
         def runner():
             try:
@@ -932,6 +1042,10 @@ class Library:
                 traceback.print_exc()
                 job.error = str(e)
             finally:
+                with self.lock:
+                    if self._uncommitted:
+                        self.db.commit()
+                        self._uncommitted = 0
                 self.invalidate()
                 job.finished = True
         threading.Thread(target=runner, daemon=True).start()
@@ -949,7 +1063,7 @@ class Library:
             SUM(CASE WHEN status='active' AND pair_of IS NOT NULL THEN 1 ELSE 0 END) AS raw_pairs
             FROM files""")[0]
         out = {k: (v or 0) for k, v in r.items()}
-        out["dup_groups"] = len(self.dup_groups()) if self._dupes is not None else None
+        out["dup_groups"] = self._dup_count
         return out
 
     # ======================================================================= #
@@ -960,8 +1074,11 @@ class Library:
     SYSTEM_DIRS = {"$recycle.bin", "recycler", "recycled", "system volume information",
                    "trash", "trashes", "network trash folder", "temporary items", "found.000", "lost+found"}
 
-    def _walk(self, top, skip_library_dirs=True):
-        for dirpath, dirnames, filenames in os.walk(top):
+    def _walk(self, top, skip_library_dirs=True, errors=None):
+        def onerror(e):
+            if errors is not None:
+                errors.append(e)
+        for dirpath, dirnames, filenames in os.walk(top, onerror=onerror):
             rel_dir = os.path.relpath(dirpath, top)
             dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
                                  and d.lower() not in self.SYSTEM_DIRS
@@ -974,16 +1091,22 @@ class Library:
                 if ext in PHOTO_EXT or ext in VIDEO_EXT:
                     yield os.path.join(dirpath, fn), (fn if rel_dir == "." else os.path.join(rel_dir, fn))
 
-    def scan(self, job, batch=None):
+    def scan(self, job, batch=None, only=None):
+        """Look for new, changed and removed photos — on the whole drive, or with `only`
+        just inside one folder (e.g. the photos an import just copied)."""
         first_scan = self.q("SELECT COUNT(*) AS n FROM files")[0]["n"] == 0
         if batch is None and not first_scan:
             batch = "scan-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         job.step("Finding photos")
-        found = {}
-        for full, rel in self._walk(self.root):
+        found, errors = {}, []
+        top = self.full(only) if only else self.root
+        for full, rel in self._walk(top, errors=errors):
+            if only:
+                rel = os.path.join(only, rel)
             try:
                 st = os.stat(full)
-            except OSError:
+            except OSError as e:
+                errors.append(e)
                 continue
             found[rel] = (st.st_size, st.st_mtime)
             if len(found) % 500 == 0:
@@ -991,7 +1114,14 @@ class Library:
 
         existing = {r["path"]: r for r in self.q(
             "SELECT id, path, size, mtime FROM files WHERE status='active'")}
+        if only:
+            pre = only.rstrip(os.sep) + os.sep
+            existing = {k: v for k, v in existing.items() if k.startswith(pre)}
         gone = [r["id"] for p, r in existing.items() if p not in found]
+        if not os.path.isdir(self.root) or (existing and not found):
+            raise RuntimeError("I can't see your photo drive any more. Is it still plugged in?")
+        if errors:   # some folders couldn't be read — keep everything rather than forget photos
+            gone = []
         if gone:
             self.x("DELETE FROM files WHERE id=?", [(i,) for i in gone], many=True)
             for i in gone:
@@ -1016,13 +1146,23 @@ class Library:
                 for m in rows:
                     old = existing.get(m["path"])
                     if old:
-                        self.db.execute("""UPDATE files SET size=:size, mtime=:mtime, kind=:kind, taken=:taken,
-                            date_source=:date_source, lat=:lat, lon=:lon, gps_source=:gps_source,
-                            place=NULL, width=:width, height=:height, orientation=:orientation,
+                        # dates, places, tags and stars you set that aren't saved into the file yet are kept
+                        self.db.execute("""UPDATE files SET size=:size, mtime=:mtime, kind=:kind,
+                            taken=CASE WHEN %(md)s THEN taken ELSE :taken END,
+                            date_source=CASE WHEN %(md)s THEN date_source ELSE :date_source END,
+                            date_pending=CASE WHEN %(md)s THEN 1 ELSE :date_pending END,
+                            lat=CASE WHEN %(mg)s THEN lat ELSE :lat END,
+                            lon=CASE WHEN %(mg)s THEN lon ELSE :lon END,
+                            place=CASE WHEN %(mg)s THEN place ELSE NULL END,
+                            gps_pending=CASE WHEN %(mg)s THEN 1 ELSE :gps_pending END,
+                            gps_source=CASE WHEN %(mg)s THEN gps_source ELSE :gps_source END,
+                            width=:width, height=:height, orientation=:orientation,
                             camera=:camera, sha256=NULL, dhash=NULL, thumb=0,
                             tags=CASE WHEN tags_pending=1 THEN tags ELSE :tags END,
                             rating=CASE WHEN rating_pending=1 THEN rating ELSE :rating END,
-                            date_pending=:date_pending, gps_pending=:gps_pending, filedates=0, faces_done=0 WHERE id=:id""",
+                            filedates=0, faces_done=0 WHERE id=:id""" % {
+                            "md": "(date_pending=1 AND date_source IN ('manual','manual_date','copied'))",
+                            "mg": "(gps_pending=1 AND gps_source='manual')"},
                                         dict(m, id=old["id"]))
                         self._drop_thumb(old["id"])
                         self.db.execute("DELETE FROM faces WHERE file_id=?", (old["id"],))
@@ -1067,7 +1207,7 @@ class Library:
         by_moment = defaultdict(list)
         for r in rows:
             if r["date_source"] == "exif" and r["camera"] and r["id"] not in pair:
-                by_moment[(r["taken"], r["camera"])].append(r)
+                by_moment[(os.path.dirname(r["path"]).lower(), r["taken"], r["camera"])].append(r)
         led = set(pair.values())
         for group in by_moment.values():
             raws = [r for r in group if os.path.splitext(r["path"])[1].lower() in RAW_EXT and r["id"] not in pair]
@@ -1150,7 +1290,10 @@ class Library:
     # ---------- thumbnails ----------
     def thumb_path(self, fid):
         d = os.path.join(self.data, "thumbs", "%02x" % (fid % 256))
-        os.makedirs(d, exist_ok=True)
+        made = self.__dict__.setdefault("_thumb_dirs", set())
+        if d not in made:
+            os.makedirs(d, exist_ok=True)
+            made.add(d)
         return os.path.join(d, "%d.jpg" % fid)
 
     def _drop_thumb(self, fid):
@@ -1222,7 +1365,16 @@ class Library:
 
     def _thumb_one(self, fid, rel, kind):
         full = self.full(rel)
-        img = self.open_image(full, 800) if kind == "photo" else self.video_frame(full)
+        img = None
+        seed = (getattr(self, "_thumb_seed", None) or {}).get(rel)
+        if seed:   # the preview made while checking the import — no need to read the big file again
+            try:
+                img = Image.open(seed)
+                img.load()
+            except Exception:
+                img = None
+        if img is None:
+            img = self.open_image(full, 800) if kind == "photo" else self.video_frame(full)
         if img is None:
             return fid, None, False
         try:
@@ -1339,7 +1491,9 @@ class Library:
                 bands[b][(v >> (16 * b)) & 0xFFFF].append((key, v))
 
         def ts_of(taken, source_kind):
-            if taken and source_kind in ("exif", "sidecar", "manual"):
+            # only the camera's own clock is comparable — a time you changed (e.g. fixing a
+            # wrong camera clock) must not hide that the photo is already in the library
+            if taken and source_kind in ("exif", "sidecar"):
                 try:
                     return iso_to_ts(taken)
                 except (ValueError, OverflowError):
@@ -1369,106 +1523,132 @@ class Library:
             job.done = min(len(files), i + 150)
 
         job.step("Comparing with your library", len(files))
-        items, seen_sha, new_by_size = [], {}, defaultdict(list)
-        for idx, src in enumerate(files):
-            job.done = idx + 1
+        sizes = {}
+        for f in files:
             try:
-                size = os.path.getsize(src)
+                sizes[f] = os.path.getsize(f)
             except OSError:
-                continue
+                pass
+        src_sizes = Counter(sizes.values())
+
+        def prepare(arg):
+            """The slow part for one file — fingerprint and preview — done 4 files at a time."""
+            idx, src = arg
+            size = sizes.get(src)
+            if size is None:
+                return None
             ext = os.path.splitext(src)[1].lower()
             kind = "video" if ext in VIDEO_EXT else "photo"
-            meta = info.get(src) or {}
-            taken = None
-            for key in ("DateTimeOriginal", "CreationDate", "CreateDate", "MediaCreateDate"):
-                taken = parse_iso(meta.get(key))
-                if taken:
-                    break
-            try:
-                w, h, o = int(meta.get("ImageWidth") or 0), int(meta.get("ImageHeight") or 0), int(meta.get("Orientation") or 1)
-            except (TypeError, ValueError):
-                w = h = 0
-                o = 1
-            has_time = bool(taken)
-            if not taken:
-                s_taken, _, _ = read_sidecar(src)
-                taken = s_taken
-                has_time = bool(taken)
-            if not taken:
-                taken, has_time, _ = date_from_filename(os.path.basename(src))
-            lat, lon = valid_coords(meta.get("GPSLatitude"), meta.get("GPSLongitude"))
-            if lat is None:
-                _, s_lat, s_lon = read_sidecar(src)
-                lat, lon = valid_coords(s_lat, s_lon)
-            camera = " ".join(x for x in (str(meta.get("Make") or "").strip(), str(meta.get("Model") or "").strip()) if x) or None
-            item = {"i": idx, "src": src, "name": os.path.basename(src),
-                    "folder": os.path.dirname(os.path.relpath(src, source)),
-                    "size": size, "kind": kind, "taken": taken, "has_time": has_time,
-                    "width": w or None, "height": h or None,
-                    "status": "new", "match": None, "match_new": None, "thumb": False,
-                    "q": None, "dhash": None, "flags": [], "burst": None, "keep": True, "why": "",
-                    "lat": lat, "lon": lon, "city": None, "camera": camera,
-                    "name_part": extract_name(os.path.basename(src)), "raw_of": None}
-
-            # 1. byte-for-byte the same as a library photo or an earlier photo in this folder
             sha = None
-            if by_size.get(size) or new_by_size.get(size):
-                sha = sha256_of(src)
-                for r in by_size.get(size, []):
-                    if not r["sha256"]:
-                        try:
-                            r["sha256"] = sha256_of(self.full(r["path"]))
-                            self.x("UPDATE files SET sha256=? WHERE id=?", (r["sha256"], r["id"]))
-                        except OSError:
-                            continue
-                    if r["sha256"] == sha:
-                        item["status"], item["match"] = "exact", r["id"]
-                        break
-                if item["status"] == "new" and sha in seen_sha:
-                    item["status"], item["match_new"] = "repeat", seen_sha[sha]
-            if sha:
-                seen_sha.setdefault(sha, idx)
-            new_by_size[size].append(idx)
-
-            # 2. preview + fingerprint (also catches resized / re-saved / stripped copies)
-            img = self.open_image(src, 480) if kind == "photo" else self.video_frame(src)
-            if img is not None:
+            if by_size.get(size) or src_sizes[size] > 1:
                 try:
-                    img = ImageOps.exif_transpose(img)
-                except Exception:
-                    pass
-                img = img.convert("RGB")
-                img.thumbnail((480, 480))
-                img.save(os.path.join(tdir, "%d.jpg" % idx), "JPEG", quality=80)
-                item["thumb"] = True
+                    sha = sha256_of(src)
+                except OSError:
+                    sha = None
+            thumb, v = False, None
+            try:
+                img = self.open_image(src, 480) if kind == "photo" else self.video_frame(src)
+                if img is not None:
+                    try:
+                        img = ImageOps.exif_transpose(img)
+                    except Exception:
+                        pass
+                    img = img.convert("RGB")
+                    img.thumbnail((480, 480))
+                    img.save(os.path.join(tdir, "%d.jpg" % idx), "JPEG", quality=80)
+                    thumb = True
+                    if kind == "photo" and ext not in RAW_EXT:
+                        v = int(dhash_of(img), 16)
+            except Exception as e:
+                print("preview failed:", src, e)
+            return idx, src, size, ext, kind, sha, thumb, v
 
-                if kind == "photo" and item["status"] == "new" and ext not in RAW_EXT:
-                    v = int(dhash_of(img), 16)
-                    if 4 <= popcount(v) <= 60:
-                        my_ts, my_asp = ts_of(taken, "exif"), aspect(w, h, o)
-                        best = None
-                        for b in range(4):
-                            for key, vv in bands[b].get((v >> (16 * b)) & 0xFFFF, ()):
-                                d = popcount(v ^ vv)
-                                if d > SIMILAR_MAX_BITS:
-                                    continue
-                                their_ts, their_asp = ref.get(key, (None, None))
-                                if my_ts and their_ts and abs(my_ts - their_ts) > 2:
-                                    continue
-                                if my_asp and their_asp and abs(my_asp - their_asp) / max(my_asp, their_asp) > 0.05:
-                                    continue
-                                rank = (0 if key[0] == "lib" else 1, d)
-                                if best is None or rank < best[0]:
-                                    best = (rank, key)
-                        if best:
-                            key = best[1]
-                            if key[0] == "lib":
-                                item["status"], item["match"] = "similar", key[1]
-                            else:
-                                item["status"], item["match_new"] = "repeat", key[1]
-                        add_hash(("new", idx), v)
-                        ref[("new", idx)] = (my_ts, my_asp)
-            items.append(item)
+        items, seen_sha, sha_updates = [], {}, []
+        with ThreadPoolExecutor(4) as pool:
+            for res in pool.map(prepare, enumerate(files)):
+                if res is None:
+                    job.done += 1
+                    continue
+                idx, src, size, ext, kind, sha, thumb, v = res
+                job.done = idx + 1
+                meta = info.get(src) or {}
+                taken, exact_time = None, False
+                for key in ("DateTimeOriginal", "CreationDate", "CreateDate", "MediaCreateDate"):
+                    taken = parse_iso(meta.get(key))
+                    if taken:
+                        break
+                try:
+                    w, h, o = int(meta.get("ImageWidth") or 0), int(meta.get("ImageHeight") or 0), int(meta.get("Orientation") or 1)
+                except (TypeError, ValueError):
+                    w = h = 0
+                    o = 1
+                has_time = exact_time = bool(taken)
+                s_taken, s_lat, s_lon = (None, None, None)
+                if not taken or meta.get("GPSLatitude") is None:
+                    s_taken, s_lat, s_lon = read_sidecar(src)
+                if not taken:
+                    taken = s_taken
+                    has_time = exact_time = bool(taken)
+                if not taken:
+                    taken, has_time, _ = date_from_filename(os.path.basename(src))
+                lat, lon = valid_coords(meta.get("GPSLatitude"), meta.get("GPSLongitude"))
+                if lat is None:
+                    lat, lon = valid_coords(s_lat, s_lon)
+                camera = " ".join(x for x in (str(meta.get("Make") or "").strip(), str(meta.get("Model") or "").strip()) if x) or None
+                item = {"i": idx, "src": src, "name": os.path.basename(src),
+                        "folder": os.path.dirname(os.path.relpath(src, source)),
+                        "size": size, "kind": kind, "taken": taken, "has_time": has_time,
+                        "exact_time": exact_time,
+                        "width": w or None, "height": h or None,
+                        "status": "new", "match": None, "match_new": None, "thumb": thumb,
+                        "q": None, "dhash": None, "flags": [], "burst": None, "keep": True, "why": "",
+                        "lat": lat, "lon": lon, "city": None, "camera": camera,
+                        "name_part": extract_name(os.path.basename(src)), "raw_of": None}
+
+                # 1. byte-for-byte the same as a library photo or an earlier photo in this folder
+                if sha:
+                    for r in by_size.get(size, []):
+                        if not r["sha256"]:
+                            try:
+                                r["sha256"] = sha256_of(self.full(r["path"]))
+                                sha_updates.append((r["sha256"], r["id"]))
+                            except OSError:
+                                continue
+                        if r["sha256"] == sha:
+                            item["status"], item["match"] = "exact", r["id"]
+                            break
+                    if item["status"] == "new" and sha in seen_sha:
+                        item["status"], item["match_new"] = "repeat", seen_sha[sha]
+                    seen_sha.setdefault(sha, idx)
+
+                # 2. fingerprint (also catches resized / re-saved / stripped copies)
+                if v is not None and item["status"] == "new" and 4 <= popcount(v) <= 60:
+                    my_ts, my_asp = ts_of(taken, "exif" if exact_time else "filename"), aspect(w, h, o)
+                    best = None
+                    for b in range(4):
+                        for key, vv in bands[b].get((v >> (16 * b)) & 0xFFFF, ()):
+                            d = popcount(v ^ vv)
+                            if d > SIMILAR_MAX_BITS:
+                                continue
+                            their_ts, their_asp = ref.get(key, (None, None))
+                            if my_ts and their_ts and abs(my_ts - their_ts) > 2:
+                                continue
+                            if my_asp and their_asp and abs(my_asp - their_asp) / max(my_asp, their_asp) > 0.05:
+                                continue
+                            rank = (0 if key[0] == "lib" else 1, d)
+                            if best is None or rank < best[0]:
+                                best = (rank, key)
+                    if best:
+                        key = best[1]
+                        if key[0] == "lib":
+                            item["status"], item["match"] = "similar", key[1]
+                        else:
+                            item["status"], item["match_new"] = "repeat", key[1]
+                    add_hash(("new", idx), v)
+                    ref[("new", idx)] = (my_ts, my_asp)
+                items.append(item)
+        if sha_updates:
+            self.x("UPDATE files SET sha256=? WHERE id=?", sha_updates, many=True)
 
         # RAW + JPEG of the same shot travel together
         by_stem = defaultdict(list)
@@ -1476,7 +1656,8 @@ class Library:
             by_stem[(os.path.dirname(it["src"]).lower(), os.path.splitext(it["name"])[0].lower())].append(it)
         for group in by_stem.values():
             raws = [x for x in group if os.path.splitext(x["name"])[1].lower() in RAW_EXT]
-            lead = [x for x in group if os.path.splitext(x["name"])[1].lower() not in RAW_EXT]
+            lead = [x for x in group if os.path.splitext(x["name"])[1].lower() not in RAW_EXT
+                    and x["kind"] == "photo"]
             if len(raws) == 1 and len(lead) == 1:
                 raws[0]["raw_of"] = lead[0]["i"]
                 lead[0]["raw"] = raws[0]["name"]
@@ -1509,7 +1690,7 @@ class Library:
         # bursts: taken within 15 seconds of each other and looking alike
         timed = []
         for it in new:
-            if it["taken"] and it["dhash"]:
+            if it["taken"] and it["dhash"] and it.get("timed", True):   # date-only photos aren't bursts
                 timed.append((iso_to_ts(it["taken"]), it))
         timed.sort(key=lambda x: x[0])
         groups, cur = [], []
@@ -1624,7 +1805,11 @@ class Library:
         self.x("UPDATE files SET scene=? WHERE id=?", (sc, r["id"]))
         return sc
 
-    def guess_date(self, fid, name="", year="", place=""):
+    def guess_date(self, *a, **kw):
+        with self.batch():
+            return self._guess_date(*a, **kw)
+
+    def _guess_date(self, fid, name="", year="", place=""):
         """Suggest dates for an undated photo from the dated photos that look most like it."""
         me = self.get(int(fid))
         if not me or me["thumb"] != 1:
@@ -1740,6 +1925,7 @@ class Library:
             items.append({"i": r["id"], "name": os.path.basename(r["path"]), "folder": os.path.dirname(r["path"]),
                           "size": r["size"], "kind": r["kind"], "status": "new", "q": q, "dhash": r["dhash"],
                           "taken": r["taken"] if r["date_source"] not in NEEDS_DATE else None,
+                          "timed": r["date_source"] not in NEEDS_DATE + NO_TIME,
                           "rating": r["rating"], "flags": [], "burst": None, "keep": True, "why": ""})
         self._suggest_picks(items)
         model = self.taste_model()
@@ -1776,7 +1962,7 @@ class Library:
         result = {"picked": len(keep), "trashed": trashed, "set_aside": aside}
         rated_ids = [i for _, i in changed if i in set(keep)]
         if rated_ids:
-            result.update(self.apply(job, rated_ids))   # save the stars into the photos now
+            result.update(self.apply(job, rated_ids, rename=False))   # save the stars into the photos now
         else:
             result.update(self.sync_highlights(job))
         self._pick_session = None
@@ -1928,9 +2114,13 @@ class Library:
             img.save(big, "JPEG", quality=85)
         return big, "image/jpeg"
 
-    def commit_import(self, job, include, ratings=None, event=None, shift=0, album=None,
-                      rename=True, delete_source=False, names=None, times=None, tags=None,
-                      places=None, batch_place=None):
+    def commit_import(self, job, *args, **kw):
+        with self.batch():
+            return self._commit_import(job, *args, **kw)
+
+    def _commit_import(self, job, include, ratings=None, event=None, shift=0, album=None,
+                       rename=True, delete_source=False, names=None, times=None, tags=None,
+                       places=None, batch_place=None):
         p = getattr(self, "pending_import", None)
         if not p:
             raise ValueError("Please check the folder again.")
@@ -1949,16 +2139,38 @@ class Library:
         places = {int(k): v for k, v in (places or {}).items() if v}
         named_paths, timed_paths, tagged_paths, placed_paths = {}, {}, {}, {}
         job.step("Copying photos to your drive", len(chosen))
-        stamp = dt.datetime.now().strftime("%Y-%m-%d %H%M")
+        stamp = dt.datetime.now().strftime("%Y-%m-%d %H%M%S")
         dest_dir = os.path.join(self.root, INBOX, stamp)
+        seed, copy_failed = {}, []
+        tdir = os.path.join(self.data, "import-check")
+
+        def clean(part):
+            return BAD_CHARS_RE.sub("_", part).strip() or "_"
         for it in chosen:
             if os.path.exists(it["src"]):
-                os.makedirs(dest_dir, exist_ok=True)
-                dest = unique_path(os.path.join(dest_dir, it["name"]))
-                shutil.copy2(it["src"], dest)
-                if os.path.getsize(dest) == os.path.getsize(it["src"]):
-                    copied_ok.append(it["src"])
+                # keep the card's own folders apart, so a RAW stays next to its own JPEG
+                sub = os.path.join(*[clean(x) for x in it["folder"].split(os.sep)]) if it["folder"] else ""
+                ddir = os.path.join(dest_dir, sub)
+                dest = None
+                try:
+                    os.makedirs(ddir, exist_ok=True)
+                    dest = unique_path(os.path.join(ddir, clean(it["name"])))
+                    shutil.copy2(it["src"], dest)
+                    if os.path.getsize(dest) != os.path.getsize(it["src"]):
+                        raise OSError("the copy came out a different size")
+                except OSError as e:
+                    if dest and os.path.exists(dest):
+                        try:
+                            os.remove(dest)
+                        except OSError:
+                            pass
+                    copy_failed.append({"name": it["name"], "error": str(e)[:200]})
+                    job.done += 1
+                    continue
+                copied_ok.append(it["src"])
                 rel = os.path.relpath(dest, self.root)
+                if it.get("thumb"):
+                    seed[rel] = os.path.join(tdir, "%d.jpg" % it["i"])
                 if it["i"] in names:
                     named_paths[rel] = names[it["i"]]
                 if it["i"] in times:
@@ -1971,11 +2183,22 @@ class Library:
                     rated[os.path.relpath(dest, self.root)] = ratings[it["i"]]
                 side = find_sidecar(it["src"])
                 if side:
-                    shutil.copy2(side, dest + ".json")
+                    try:
+                        shutil.copy2(side, dest + ".json")
+                    except OSError:
+                        pass
             job.done += 1
-        self.cancel_import()
+        if not copied_ok:
+            self.cancel_import()
+            raise RuntimeError("Nothing could be copied: " + (copy_failed[0]["error"] if copy_failed else "no photos"))
         batch = "import-" + stamp
-        result = self.scan(job, batch=batch)
+        self._thumb_seed = seed
+        try:
+            with self.batch():
+                result = self.scan(job, batch=batch, only=os.path.relpath(dest_dir, self.root))
+        finally:
+            self._thumb_seed = None
+            self.cancel_import()
         if rated:
             self.x("UPDATE files SET rating=?, rating_pending=1 WHERE path=?",
                    [(v, k) for k, v in rated.items()], many=True)
@@ -2025,7 +2248,8 @@ class Library:
         if delete_source and copied_ok:
             job.step("Moving the originals to the Trash", len(copied_ok))
             trashed_src = self._trash_paths(copied_ok, job)
-        result.update({"copied": len(chosen), "skipped": len(p["items"]) - len(chosen),
+        result.update({"copied": len(copied_ok), "copy_failed": copy_failed[:50],
+                       "skipped": len(p["items"]) - len(chosen),
                        "imported_ids": ids, "waiting": waiting, "renamed": bool(rename),
                        "filed": filed.get("moved", 0), "trashed_source": trashed_src,
                        "folders": sorted(set(os.path.dirname(r["path"]) for r in self.q(
@@ -2077,9 +2301,14 @@ class Library:
                       args + [limit, offset])
         items = [self.public(r) for r in rows]
         days = {}
-        for d in sorted(set(i["taken"][:10] for i in items)):
-            info = self.q("""SELECT path, title, place FROM files WHERE status='active' AND pair_of IS NULL
-                             AND substr(taken,1,10)=?""", (d,))
+        wanted = sorted(set(i["taken"][:10] for i in items if i["taken"]))
+        by_day = defaultdict(list)
+        if wanted:   # one query for the whole page (uses the date index) instead of one per day
+            for r in self.q("""SELECT path, title, place, taken FROM files WHERE status='active' AND pair_of IS NULL
+                               AND taken >= ? AND taken < ?""", (wanted[0], wanted[-1] + "T99")):
+                by_day[r["taken"][:10]].append(r)
+        for d in wanted:
+            info = by_day.get(d, [])
             names = Counter((r["title"] or extract_name(os.path.basename(r["path"]))) for r in info)
             names.pop("", None)
             places = Counter(short_place(r["place"]) for r in info if r["place"])
@@ -2091,9 +2320,10 @@ class Library:
     def name_day(self, day, title):
         """Give every photo from one day the same location/event name."""
         title = BAD_CHARS_RE.sub(" ", title or "").strip()
-        self.x("UPDATE files SET title=? WHERE status='active' AND substr(taken,1,10)=?", (title or None, day))
+        rng = (day[:10], day[:10] + "T99")
+        self.x("UPDATE files SET title=? WHERE status='active' AND taken >= ? AND taken < ?", (title or None,) + rng)
         self.invalidate()
-        n = self.q("SELECT COUNT(*) AS n FROM files WHERE status='active' AND substr(taken,1,10)=?", (day,))[0]["n"]
+        n = self.q("SELECT COUNT(*) AS n FROM files WHERE status='active' AND taken >= ? AND taken < ?", rng)[0]["n"]
         return {"updated": n, "title": title}
 
     def filters(self):
@@ -2169,10 +2399,22 @@ class Library:
     # Duplicates
     # ======================================================================= #
 
+    def dupes_in_background(self):
+        """Work out duplicate groups without making the rest of the app wait."""
+        if self._dupes is None and not self.busy() and not self._dupe_lock.locked():
+            threading.Thread(target=self._dupes_quietly, daemon=True).start()
+
+    def _dupes_quietly(self):
+        try:
+            self.dup_groups()
+        except Exception as e:
+            print("duplicate check failed:", e)
+
     def dup_groups(self):
-        with self.lock:
+        with self._dupe_lock:   # its own lock: the catalog stays usable while this runs
             if self._dupes is not None:
                 return self._dupes
+            gen = self._dupe_gen
             rows = self.q("""SELECT id, path, size, sha256, dhash, width, height, orientation, taken,
                 date_source, lat, place, kind, title, thumb, camera, gps_source FROM files
                 WHERE status='active' AND pair_of IS NULL""")
@@ -2272,7 +2514,9 @@ class Library:
                     "files": [self._dup_public(f) for f in files],
                 })
             result.sort(key=lambda g: (g["kind"] != "exact", g["taken"]))
-            self._dupes = result
+            if gen == self._dupe_gen:   # nothing changed while this was being worked out
+                self._dupes = result
+                self._dup_count = len(result)
             return result
 
     def _dup_public(self, f):
@@ -2558,11 +2802,17 @@ class Library:
             updates = [(iso, i) for i in ids]
         elif shift:
             shift = int(shift)
+            day_only = []
             for i in ids:
                 r = rows.get(i)
-                if r:
-                    new = dt.datetime.strptime(r["taken"], "%Y-%m-%dT%H:%M:%S") + dt.timedelta(seconds=shift)
-                    updates.append((new.strftime("%Y-%m-%dT%H:%M:%S"), i))
+                # photos still waiting for a date don't get one invented by a shift
+                if r and r["taken"] and r["date_source"] not in NEEDS_DATE:
+                    new = dt.datetime.strptime(r["taken"][:19], "%Y-%m-%dT%H:%M:%S") + dt.timedelta(seconds=shift)
+                    (day_only if r["date_source"] in NO_TIME else updates).append(
+                        (new.strftime("%Y-%m-%dT%H:%M:%S"), i))
+            if day_only:
+                self.x("UPDATE files SET taken=?, date_source='manual_date', date_pending=1, filedates=0 WHERE id=?",
+                       day_only, many=True)
         if updates:
             self.x("UPDATE files SET taken=?, date_source='manual', date_pending=1, filedates=0 WHERE id=?", updates, many=True)
         if rating is not None:
@@ -2979,6 +3229,8 @@ class Library:
             changes.append(self._change(r, final))
         # each RAW follows its JPEG: same folder, same name, its own ending
         lead_new = {c["id"]: c["new"] for c in changes}
+        every_path = set(r["path"].lower() for r in every)
+        raw_claimed = set()
         for lead in rows:
             for raw in raws.get(lead["id"], ()):
                 target = os.path.splitext(lead_new.get(lead["id"], lead["path"]))[0] + norm_ext(os.path.splitext(raw["path"])[1])
@@ -2986,8 +3238,11 @@ class Library:
                 if lead["date_source"] in NEEDS_DATE + NEEDS_TIME:
                     continue
                 if target != raw["path"] or pending:
-                    if target != raw["path"] and target.lower() != raw["path"].lower() and os.path.exists(self.full(target)):
+                    if target.lower() != raw["path"].lower() and (
+                            target.lower() in raw_claimed or target.lower() in every_path
+                            or os.path.exists(self.full(target))):
                         continue
+                    raw_claimed.add(target.lower())
                     changes.append(self._change(raw, target))
         return changes
 
@@ -3071,7 +3326,11 @@ class Library:
             "highlights": len(self.highlight_rows()),
         }
 
-    def apply(self, job, ids=None):
+    def apply(self, job, ids=None, rename=True):
+        with self.batch():
+            return self._apply(job, ids, rename)
+
+    def _apply(self, job, ids=None, rename=True):
         changes = self.plan()
         if ids is not None:
             ids = list(ids) + self.companions(ids)
@@ -3112,8 +3371,12 @@ class Library:
             args += ["-FileModifyDate=" + stamp]
             if IS_MAC:
                 args += ["-FileCreateDate=" + stamp]
+            ok = True
             if args:
-                ok, msg = self.et.write(self.full(r["path"]), args)
+                try:
+                    ok, msg = self.et.write(self.full(r["path"]), args)
+                except RuntimeError as e:
+                    ok, msg = False, str(e)
                 if not ok:
                     failed.append({"name": os.path.basename(r["path"]), "error": msg[:200]})
                 try:
@@ -3122,13 +3385,16 @@ class Library:
                            (st.st_size, st.st_mtime, r["id"]))
                 except OSError:
                     pass
-            self.x("UPDATE files SET gps_pending=0, date_pending=0, tags_pending=0, rating_pending=0, filedates=1 WHERE id=?",
-                   (c["id"],))
+            if ok:   # only mark as saved what really was saved — failures are tried again next time
+                self.x("UPDATE files SET gps_pending=0, date_pending=0, tags_pending=0, rating_pending=0, filedates=1 WHERE id=?",
+                       (c["id"],))
             job.done += 1
 
-        moves = [c for c in changes if c["old"] != c["new"]]
+        moves = [c for c in changes if c["old"] != c["new"]] if rename else []
         job.step("Renaming and filing", len(moves))
-        log_path = os.path.join(self.data, "logs", "organize-%s.csv" % dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        log_path = os.path.join(self.data, "logs", "organize-%s.csv" % dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+        lead_moving = set(c["id"] for c in moves if not c["lead"])
+        lead_moved = set()
         dirs = set()
         moved = 0
         with open(log_path, "w", newline="", encoding="utf-8") as f:
@@ -3137,21 +3403,33 @@ class Library:
             for c in moves:
                 src, dst = self.full(c["old"]), self.full(c["new"])
                 job.done += 1
+                if c["lead"] and c["lead"] in lead_moving and c["lead"] not in lead_moved:
+                    continue   # its JPEG couldn't move, so the RAW stays with it
                 if not os.path.exists(src):
                     continue
                 if os.path.exists(dst) and src.lower() != dst.lower():
                     failed.append({"name": c["new"], "error": "a file with that name is already there"})
                     continue
                 side = find_sidecar(src)
-                move_file(src, dst)
+                try:
+                    move_file(src, dst)
+                except OSError as e:
+                    failed.append({"name": c["new"], "error": str(e)[:200]})
+                    continue
+                row = self.get(c["id"])
+                try:
+                    self.x("UPDATE files SET path=?, title=? WHERE id=?",
+                           (c["new"], self.name_part(row) if row else None, c["id"]))
+                except sqlite3.IntegrityError:
+                    move_file(dst, src)   # put it back so the catalog and the drive agree
+                    failed.append({"name": c["new"], "error": "that name is already taken in your library"})
+                    continue
                 if side:
                     try:
                         move_file(side, unique_path(dst + ".json"))
                     except OSError:
                         pass
-                row = self.get(c["id"])
-                self.x("UPDATE files SET path=?, title=? WHERE id=?",
-                       (c["new"], self.name_part(row) if row else None, c["id"]))
+                lead_moved.add(c["id"])
                 w.writerow([c["id"], c["old"], c["new"]])
                 f.flush()
                 dirs.add(os.path.dirname(src))
@@ -3160,7 +3438,9 @@ class Library:
             os.remove(log_path)
         self._remove_empty_dirs(dirs)
         # photos still waiting for a date stay in the Inbox
-        if ids is None:
+        if not rename:
+            pass
+        elif ids is None:
             self.x("UPDATE files SET batch=NULL WHERE status='active' AND NOT " + NEEDS_SQL)
         else:
             waiting = set(r["id"] for r in self.q("SELECT id FROM files WHERE " + NEEDS_SQL))
@@ -3230,6 +3510,7 @@ class Library:
                 except Exception:
                     return r, None
 
+            nfaces = self.q("SELECT COUNT(*) AS n FROM faces")[0]["n"]
             with ThreadPoolExecutor(max_workers=2) as pool:
                 for r, im in pool.map(load, rows):
                     found = []
@@ -3239,7 +3520,8 @@ class Library:
                         except Exception:
                             found = []
                     with self.lock:
-                        self.db.execute("DELETE FROM faces WHERE file_id=?", (r["id"],))
+                        nfaces -= self.db.execute("DELETE FROM faces WHERE file_id=?", (r["id"],)).rowcount
+                        nfaces += len(found)
                         for f in found:
                             cur = self.db.execute(
                                 "INSERT INTO faces(file_id, x, y, w, h, score, size, emb) VALUES(?,?,?,?,?,?,?,?)",
@@ -3247,11 +3529,12 @@ class Library:
                                  np.asarray(f["emb"], dtype=np.float16).tobytes()))
                             f["thumb"].save(self.face_thumb_path(cur.lastrowid), "JPEG", quality=85)
                         self.db.execute("UPDATE files SET faces_done=1 WHERE id=?", (r["id"],))
-                        if job.done % 25 == 0:
+                        if job.done % 100 == 0:
                             self.db.commit()
                     job.done += 1
-                    job.message = "%s faces so far" % format(self.q("SELECT COUNT(*) AS n FROM faces")[0]["n"], ",")
-            self.db.commit()
+                    job.message = "%s faces so far" % format(max(0, nfaces), ",")
+            with self.lock:
+                self.db.commit()
         job.step("Grouping faces")
         self.face_group()
         return {"faces": self.q("SELECT COUNT(*) AS n FROM faces")[0]["n"]}
@@ -3305,24 +3588,30 @@ class Library:
                     loose.append(i)
         # pile up the unnamed faces: each joins the closest pile if alike enough
         cluster_of = {}
-        piles, sums = [], []
+        piles = []
+        dim = E.shape[1] if len(E) else 512
+        sums = np.zeros((max(1, len(loose)), dim), dtype=np.float32)
+        P = np.zeros_like(sums)          # each pile's typical face, kept up to date
         for i in loose:
             e = E[i]
-            if piles:
-                P = np.stack(sums)
-                P = P / np.maximum(1e-6, np.linalg.norm(P, axis=1, keepdims=True))
-                sims = P @ e
+            n = len(piles)
+            if n:
+                sims = P[:n] @ e
                 k = int(np.argmax(sims))
                 if sims[k] >= FACE_MATCH:
                     piles[k].append(i)
-                    sums[k] = sums[k] + e
+                    sums[k] += e
+                    P[k] = sums[k] / max(1e-6, float(np.linalg.norm(sums[k])))
                     cluster_of[rows[i]["id"]] = k + 1
                     continue
             piles.append([i])
-            sums.append(e.copy())
+            sums[n] = e
+            P[n] = e / max(1e-6, float(np.linalg.norm(e)))
             cluster_of[rows[i]["id"]] = len(piles)
         updates = [(p, s, cluster_of.get(fid), fid) for p, s, _, fid in updates]
-        self.x("UPDATE faces SET person_id=?, status=?, cluster=? WHERE id=?", updates, many=True)
+        # faces you confirmed or hid while this was running are left as you set them
+        self.x("UPDATE faces SET person_id=?, status=?, cluster=? WHERE id=? AND status NOT IN ('confirmed','ignored')",
+               updates, many=True)
 
     def _refresh_people_on_files(self, file_ids):
         file_ids = list(set(int(i) for i in file_ids if i))
@@ -3473,16 +3762,18 @@ class Library:
     def sync_highlights(self, job=None):
         """Keep '2025 Highlights' etc. holding a copy of each top-rated photo from that year.
         Only copies the app made are ever removed."""
-        want = defaultdict(dict)
+        want, low = defaultdict(dict), defaultdict(dict)
         for r in self.highlight_rows():
             year = r["taken"][:4]
             name = os.path.basename(r["path"])
             base, ext = os.path.splitext(name)
             k = 2
-            while name in want[year] and want[year][name]["id"] != r["id"]:
+            # exFAT ignores capitals, so IMG_1.JPG and img_1.jpg would be the same file
+            while name.lower() in low[year] and low[year][name.lower()]["id"] != r["id"]:
                 name = "%s %d%s" % (base, k, ext)
                 k += 1
             want[year][name] = r
+            low[year][name.lower()] = r
         years = set(want) | set(d[:4] for d in os.listdir(self.root) if HIGHLIGHTS_RE.match(d))
         added = removed = 0
         for year in sorted(years):
@@ -3501,7 +3792,15 @@ class Library:
                         pass
                     del manifest[name]
                     removed += 1
-            for name, r in want.get(year, {}).items():
+            try:
+                added += self._fill_highlights(folder, manifest, want.get(year, {}))
+            finally:   # always remember which copies are ours, even if copying stopped part way
+                self._save_highlights(folder, mpath, manifest)
+        return {"highlights_added": added, "highlights_removed": removed}
+
+    def _fill_highlights(self, folder, manifest, wanted):
+        added = 0
+        for name, r in wanted.items():
                 src = self.full(r["path"])
                 try:
                     st = os.stat(src)
@@ -3525,9 +3824,20 @@ class Library:
                         if os.path.exists(dst):
                             os.remove(dst)
                 if not copied:
-                    shutil.copy2(src, dst)
+                    try:
+                        shutil.copy2(src, dst)
+                    except OSError as e:
+                        print("highlight copy failed:", name, e)
+                        try:
+                            os.remove(dst)
+                        except OSError:
+                            pass
+                        continue
                 manifest[name] = {"src": r["path"], "size": st.st_size}
                 added += 1
+        return added
+
+    def _save_highlights(self, folder, mpath, manifest):
             if manifest:
                 with open(mpath, "w", encoding="utf-8") as f:
                     json.dump(manifest, f, indent=1)
@@ -3539,7 +3849,6 @@ class Library:
                 left = [x for x in os.listdir(folder) if x != ".DS_Store" and not x.startswith("._")]
                 if not left:
                     shutil.rmtree(folder, ignore_errors=True)
-        return {"highlights_added": added, "highlights_removed": removed}
 
     def highlights_job(self, job):
         job.step("Updating your highlights")
@@ -3551,6 +3860,10 @@ class Library:
         return os.path.join(d, logs[-1]) if logs else None
 
     def undo(self, job):
+        with self.batch():
+            return self._undo(job)
+
+    def _undo(self, job):
         log = self.last_log()
         if not log:
             raise ValueError("There's nothing to undo.")
@@ -3564,13 +3877,20 @@ class Library:
             if not os.path.exists(src) or (os.path.exists(dst) and src.lower() != dst.lower()):
                 continue
             side = find_sidecar(src)
-            move_file(src, dst)
+            try:
+                move_file(src, dst)
+            except OSError:
+                continue
             if side:
                 try:
                     move_file(side, unique_path(dst + ".json"))
                 except OSError:
                     pass
-            self.x("UPDATE files SET path=? WHERE id=?", (row["old"], int(row["id"])))
+            try:
+                self.x("UPDATE files SET path=? WHERE id=?", (row["old"], int(row["id"])))
+            except sqlite3.IntegrityError:
+                move_file(dst, src)
+                continue
             dirs.add(os.path.dirname(src))
             back += 1
         os.rename(log, log[:-4] + ".undone")

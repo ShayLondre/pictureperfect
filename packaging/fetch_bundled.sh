@@ -27,5 +27,14 @@ for f in cities500.zip admin1CodesASCII.txt countryInfo.txt; do
 done
 ls -la "$X/geo"
 
+echo "Map library…"
+L=app/static/vendor/leaflet
+rm -rf "$L" && mkdir -p "$L"
+curl -fsSL https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz -o "$TMP/leaflet.tgz"
+tar xzf "$TMP/leaflet.tgz" -C "$TMP"
+cp "$TMP/package/dist/leaflet.js" "$TMP/package/dist/leaflet.css" "$TMP/package/LICENSE" "$L/"
+cp -R "$TMP/package/dist/images" "$L/images"
+ls -la "$L"
+
 echo "Icon…"
 python3 packaging/make_icon.py "$X/icon.icns"

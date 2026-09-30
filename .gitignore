@@ -5,3 +5,4 @@ dist/
 build_extra/
 .DS_Store
 *.zip
+app/static/vendor/

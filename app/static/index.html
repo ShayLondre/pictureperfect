@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Picture Perfect</title>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 </head>
 <body>
 
@@ -137,7 +136,7 @@
             <label class="opt"><input type="checkbox" id="op-rename" checked> Rename and file as shown</label>
             <label class="opt"><input type="checkbox" id="op-dupes" checked> Leave out photos I already have</label>
             <label class="opt"><input type="checkbox" id="op-delete"> Move originals to the Trash after importing</label>
-            <p class="hint" id="op-delete-note" hidden>Only after each photo is safely copied. You can still Put Back from the Trash.</p>
+            <p class="hint" id="op-delete-note" hidden>Only after each photo is safely copied. You can drag them back out of the Trash until you empty it.</p>
           </div>
         </div>
       </div>
@@ -261,7 +260,7 @@
         <span class="muted small" id="pk2-taste"></span>
       </div>
       <div class="picks" id="pk2-list"></div>
-      <p class="hint" style="margin-top:16px">Deleted photos go to the Mac <b>Trash</b>, so you can still get one back with <b>Put Back</b> until you empty the Trash.</p>
+      <p class="hint" style="margin-top:16px">Deleted photos go to the Mac <b>Trash</b>, so you can still drag one back out until you empty the Trash.</p>
     </div>
   </section>
 
@@ -449,6 +448,7 @@
         </div>
         <div class="tu-folder-cards" id="tu-folder-cards"></div>
         <div class="tu-grid" id="tu-grid"></div>
+        <div class="more-row"><button class="ghost" id="tu-more" hidden>Show more</button></div>
         <div class="empty" id="tu-none" hidden>No photos here.</div>
       </div>
     </div>
@@ -609,7 +609,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

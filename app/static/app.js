@@ -115,27 +115,29 @@ function summarize(job) {
 }
 
 async function poll() {
+  let running = false;
   try {
     const st = await refreshState();
-    const running = st.job && !st.job.finished;
-    if (!running && !S.lastJobFinished) {
-      S.lastJobFinished = true;
+    const job = st.job;
+    running = !!(job && !job.finished);
+    if (job && job.finished && job.id !== S.handledJob) {
+      S.handledJob = job.id;          // each finished job is handled exactly once
       await loadFilters();
-      const res = (st.job && st.job.result) || {};
+      const res = job.result || {};
       loadAlbums();
-      if (st.job && st.job.error && (IM.state === "checking" || IM.state === "running")) importScreen(IM.state === "running" ? "pick" : "start");
-      if (res.import_check && !st.job.error) showImport();
-      else if (res.imported_ids !== undefined && !st.job.error) showImportReview(res);
-      else if (res.tidied !== undefined && !st.job.error) { tuReset(); if (S.tab === "organize") loadTidy(); loadAlbums(); }
-      else if (res.inbox_new && !st.job.error) showTab("inbox");   // new photos found on the drive
+      if (job.error && (IM.state === "checking" || IM.state === "running")) importScreen(IM.state === "running" ? "pick" : "start");
+      if (res.import_check && !job.error) showImport();
+      else if (res.imported_ids !== undefined && !job.error) showImportReview(res);
+      else if (res.tidied !== undefined && !job.error) { tuReset(); if (S.tab === "organize") loadTidy(); loadAlbums(); }
+      else if (res.inbox_new && !job.error) showTab("inbox");   // new photos found on the drive
       else if (S.tab === "inbox" && R.mode !== "inbox") showTab("inbox", true);
       else showTab(S.tab, true);
+    } else if (!job && (IM.state === "checking" || IM.state === "running")) {
+      // the job finished and was dismissed before we saw it: pick up where it left off
+      if (IM.state === "checking") showImport(); else importScreen("start");
     }
-    if (running) S.lastJobFinished = false;
-    setTimeout(poll, running ? 800 : 4000);
-  } catch (e) {
-    setTimeout(poll, 4000);
-  }
+  } catch (e) { /* try again shortly */ }
+  setTimeout(poll, running ? 1000 : 4000);
 }
 
 /* ------------------------------------------------------------------ setup */
@@ -152,10 +154,8 @@ function showSetup(st) {
 async function openLibrary(path) {
   try {
     await api("/api/library", { path });
-    S.lastJobFinished = false;
-    await refreshState();
-    loadAlbums();
-    showTab("browse");
+    // start fresh: nothing chosen in the old folder (selections, imports, edits) carries over
+    location.reload();
   } catch (e) { fail(e); }
 }
 
@@ -228,12 +228,22 @@ async function openPickSet(ids, label) {
 }
 
 function renderPicks() {
+  renderPickStats();
+  $("#pk2-list").innerHTML = pickOrder().map(pickTile).join("");
+}
+// one click changes one photo: redraw just that tile and the counts, not the whole list
+function updatePick(i) {
+  const el = $(`#pk2-list .pk[data-i="${i}"]`);
+  const it = PK.items.find(x => x.i === i);
+  if (el && it) el.outerHTML = pickTile(it);
+  renderPickStats();
+}
+function renderPickStats() {
   const kept = PK.items.filter(i => PK.keep[i.i]).length;
   const skip = PK.items.length - kept;
   const stat = (num, label) => `<div class="stat"><div class="n">${n(num)}</div><div class="l">${label}</div></div>`;
   $("#pk2-stats").innerHTML = stat(kept, "to keep") + stat(skip, "to delete") +
     stat(PK.items.filter(i => PK.rating[i.i]).length, "with stars");
-  $("#pk2-list").innerHTML = pickOrder().map(pickTile).join("");
   $("#pk2-done").textContent = skip ? `Keep ${n(kept)}, delete ${n(skip)}` : `Keep all ${n(kept)}`;
 }
 
@@ -260,8 +270,8 @@ $("#pk2-list").onclick = (e) => {
   const card = e.target.closest(".pk"); if (!card) return;
   const i = +card.dataset.i;
   const st = e.target.closest("[data-star]");
-  if (st) { const v = +st.dataset.star; PK.rating[i] = PK.rating[i] === v ? 0 : v; if (PK.rating[i]) PK.keep[i] = true; return renderPicks(); }
-  if (e.target.closest("[data-toggle]")) { PK.keep[i] = !PK.keep[i]; return renderPicks(); }
+  if (st) { const v = +st.dataset.star; PK.rating[i] = PK.rating[i] === v ? 0 : v; if (PK.rating[i]) PK.keep[i] = true; return updatePick(i); }
+  if (e.target.closest("[data-toggle]")) { PK.keep[i] = !PK.keep[i]; return updatePick(i); }
   if (e.target.closest("[data-cull]")) openCull(i);
 };
 $("#pk2-keep-all").onclick = () => { PK.items.forEach(i => (PK.keep[i.i] = true)); renderPicks(); };
@@ -269,7 +279,7 @@ $("#pk2-reset").onclick = () => { PK.items.forEach(i => (PK.keep[i.i] = i.keep !
 $("#pk2-done").onclick = () => {
   const keep = PK.items.filter(i => PK.keep[i.i]).map(i => i.i);
   const skip = PK.items.filter(i => !PK.keep[i.i]).map(i => i.i);
-  if (skip.length && !confirm(`Move ${plural(skip.length, "photo")} to the Trash? You can still Put Back from the Trash until you empty it.`)) return;
+  if (skip.length && !confirm(`Move ${plural(skip.length, "photo")} to the Trash? You can drag them back out of the Trash until you empty it.`)) return;
   const ratings = {};
   PK.items.forEach(i => { if ((PK.rating[i.i] || 0) !== (i.rating || 0)) ratings[i.i] = PK.rating[i.i] || 0; });
   api("/api/pick/commit", { keep, skip, ratings }).then(() => {
@@ -388,6 +398,7 @@ async function showImport(r) {
   IM.shown = 120;
   IM.sel = new Set(IM.items.filter(i => i.status === "new").map(i => i.i));
   IM.over = {}; IM.times = {}; IM.tags = {}; IM.stars = {}; IM.q = ""; IM.editing = false;
+  IM.inuse = {}; IM.asking = new Set();   // names on the drive may have changed since the last import
   IM.places = {}; IM.bplace = null;
   IM.focus = (IM.items.find(i => i.status === "new") || IM.items[0] || {}).i;
   $("#im-search").value = ""; $("#im-search").hidden = true;
@@ -395,7 +406,8 @@ async function showImport(r) {
   $("#im-folders").value = IM.settings.folders || "month_group";
   $("#im-event").value = "";
   $("#im-format").value = IM.settings.time === "0" ? "0" : "1";
-  const dated = IM.items.filter(i => i.taken).map(i => i.taken).sort();
+  // only photos with a real time move with the Date & Time box (date-only ones keep their day, as on import)
+  const dated = IM.items.filter(i => i.taken && i.has_time).map(i => i.taken).sort();
   IM.base = dated.length ? dated[0].slice(0, 16) : null;
   $("#im-date").value = IM.base ? IM.base.slice(0, 10) : "";
   $("#im-time").value = IM.base ? IM.base.slice(11, 16) : "";
@@ -459,7 +471,8 @@ function imPlace(it) {   // what location this photo will end up with, and where
 }
 function imTaken(it) {
   if (IM.times[it.i]) return IM.times[it.i];
-  return it.taken ? shiftIso(it.taken, imShift()) : null;
+  if (!it.taken) return null;
+  return it.has_time ? shiftIso(it.taken, imShift()) : it.taken;
 }
 function imHasTime(it) { return !!IM.times[it.i] || it.has_time; }
 function imNewName(it) {
@@ -790,7 +803,7 @@ $("#im-cancel").onclick = async () => { await api("/api/import/cancel", {}); imp
 $("#im-go").onclick = () => {
   const include = IM.items.filter(i => IM.sel.has(i.i)).map(i => i.i);
   if (!include.length) return;
-  if ($("#op-delete").checked && !confirm(`After copying, move the ${plural(include.length, "original")} to the Trash? You can Put Back from the Trash until you empty it.`)) return;
+  if ($("#op-delete").checked && !confirm(`After copying, move the ${plural(include.length, "original")} to the Trash? You can drag them back out of the Trash until you empty it.`)) return;
   const al = albumChosen();
   const pick = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => IM.sel.has(+k)));
   const bt = imBatchTags(), tags = pick(IM.tags);
@@ -907,10 +920,16 @@ $("#browse-unorg-go").onclick = () => showTab("organize");  // Tidy Up
 
 async function loadBrowse(reset, soft) {
   if (reset) checkUnorganized();
-  if (reset) { B.offset = 0; B.items = []; B.days = {}; }
-  const q = new URLSearchParams(Object.assign(browseFilters(), { offset: B.offset, limit: 150 }));
+  if (!reset && B.loading) return;               // "Show more" clicked twice
+  const seq = B.seq = (B.seq || 0) + 1;
+  const offset = reset ? 0 : B.offset;
+  B.loading = true;
+  const q = new URLSearchParams(Object.assign(browseFilters(), { offset, limit: 150 }));
   let r;
-  try { r = await api("/api/search?" + q); } catch (e) { return fail(e); }
+  try { r = await api("/api/search?" + q); } catch (e) { B.loading = false; return fail(e); }
+  if (seq !== B.seq) return;                      // a newer search replaced this one
+  B.loading = false;
+  if (reset) { B.items = []; B.days = {}; }
   B.total = r.total;
   B.items = B.items.concat(r.items);
   Object.assign(B.days, r.days);
@@ -1104,7 +1123,8 @@ const D = { kind: "", groups: [], total: 0, choice: {} };
 
 async function loadDupes() {
   let r;
-  try { r = await api("/api/dupes?kind=" + D.kind); } catch (e) { return fail(e); }
+  D.skipped = D.skipped || new Set();
+  try { r = await api("/api/dupes", { kind: D.kind, skip: [...D.skipped] }); } catch (e) { return fail(e); }
   D.groups = r.groups; D.total = r.total;
   D.choice = {};
   for (const g of D.groups) {
@@ -1171,7 +1191,7 @@ $("#dupe-list").onclick = async (e) => {
   }
   const act = e.target.closest("[data-act]");
   if (!act) return;
-  if (act.dataset.act === "skip") { card.remove(); D.groups = D.groups.filter(x => x.key !== key); if (!D.groups.length) loadDupes(); return; }
+  if (act.dataset.act === "skip") { D.skipped = D.skipped || new Set(); D.skipped.add(key); card.remove(); D.groups = D.groups.filter(x => x.key !== key); if (!D.groups.length) loadDupes(); return; }
   let keep = g.files.filter(f => D.choice[key][f.id]).map(f => f.id);
   let aside = g.files.filter(f => !D.choice[key][f.id]).map(f => f.id);
   if (act.dataset.act === "all") { keep = g.files.map(f => f.id); aside = []; }
@@ -1284,7 +1304,25 @@ function openPicker(ids, title, done, initial, onPick) {
   }, 30);
 }
 
-function ensureMap() {
+// the map library is loaded only when a map is opened, so a slow connection never holds up the app
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(true);
+  if (loadLeaflet.p) return loadLeaflet.p;
+  const add = (css, js) => new Promise((ok) => {
+    const l = document.createElement("link"); l.rel = "stylesheet"; l.href = css; document.head.appendChild(l);
+    const sc = document.createElement("script"); sc.src = js; sc.async = true;
+    const t = setTimeout(() => ok(false), 15000);
+    sc.onload = () => { clearTimeout(t); ok(!!window.L); }; sc.onerror = () => { clearTimeout(t); ok(false); };
+    document.head.appendChild(sc);
+  });
+  loadLeaflet.p = add("/static/vendor/leaflet/leaflet.css", "/static/vendor/leaflet/leaflet.js").then(ok => ok ||
+    add("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css", "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"))
+    .then(ok => { if (!ok) loadLeaflet.p = null; return ok; });
+  return loadLeaflet.p;
+}
+
+async function ensureMap() {
+  if (!window.L) await loadLeaflet();
   if (!window.L) { $("#pk-map").innerHTML = `<p class="muted small" style="padding:14px">Map needs an internet connection. Search still works.</p>`; return; }
   if (!P.map) {
     P.map = window.L.map("pk-map", { worldCopyJump: true }).setView([14, -62], 5);
@@ -1351,9 +1389,12 @@ const TU_FOLDER_NOTE = {
   none: "No folders — every photo together, sorted by name.",
 };
 
+$("#tu-more").onclick = () => { TU.limit = (TU.limit || 600) + 600; loadTidy(); };
 async function loadTidy() {
   let r;
-  try { r = await api(`/api/tidy/browse?${new URLSearchParams({ folder: TU.folder, q: TU.q })}`); } catch (e) { return fail(e); }
+  TU.limit = TU.limit || 600;
+  try { r = await api(`/api/tidy/browse?${new URLSearchParams({ folder: TU.folder, q: TU.q, limit: TU.limit })}`); } catch (e) { return fail(e); }
+  TU.total = r.total;
   TU.photos = r.photos; TU.folders = r.folders; TU.settings = r.settings; TU.albums = r.albums;
   r.photos.forEach(p => (TU.info[p.id] = p));
   $("#tu-format").value = r.settings.time === "0" ? "0" : "1";
@@ -1390,14 +1431,17 @@ function renderTidy() {
   const parts = TU.folder ? TU.folder.split("/") : [];
   $("#tu-folder-title").textContent = TU.q ? "Search results" : (parts.length ? parts[parts.length - 1] : "Library");
   const selHere = TU.photos.filter(p => TU.sel.has(p.id)).length;
-  $("#tu-folder-sub").textContent = `${plural(TU.photos.length, "photo")}${TU.folders.length ? " · " + plural(TU.folders.length, "folder") : ""} · ${n(TU.sel.size)} selected` +
+  $("#tu-more").hidden = !(TU.total > TU.photos.length);
+  $("#tu-more").textContent = `Show more (${n(TU.total - TU.photos.length)})`;
+  $("#tu-folder-sub").textContent = `${TU.total > TU.photos.length ? `Showing ${n(TU.photos.length)} of ` : ""}${plural(TU.total || TU.photos.length, "photo")}${TU.folders.length ? " · " + plural(TU.folders.length, "folder") : ""} · ${n(TU.sel.size)} selected` +
     (TU.photos.length && TU.photos.every(p => p.tidy) ? " · all already tidy" : "");
   $$("#tu-filter button").forEach(b => {
     const k = b.dataset.k;
     const c = k === "sel" ? TU.sel.size : k === "edit" ? TU.photos.filter(p => tuEdited(p.id)).length : TU.photos.length;
     b.textContent = `${k === "sel" ? "Selected" : k === "edit" ? "Edited" : "All"} (${n(c)})`;
   });
-  $("#tu-all").checked = TU.photos.length > 0 && selHere === TU.photos.length;
+  const selectable = TU.photos.filter(p => !p.needs);
+  $("#tu-all").checked = selectable.length > 0 && selectable.every(p => TU.sel.has(p.id));
   $("#tu-folder-cards").hidden = !!TU.q || !TU.folders.length;
   $("#tu-folder-cards").innerHTML = TU.folders.map(f => `
     <button class="fcard" data-f="${esc(f.path)}">
@@ -1484,9 +1528,11 @@ function tuRefresh() {
   renderTidyPanel();
   clearTimeout(tuTimer);
   if (!TU.sel.size) { TU.pv = {}; TU.pvList = []; TU.waiting = 0; return renderTidy(); }
+  const seq = TU.pvSeq = (TU.pvSeq || 0) + 1;
   tuTimer = setTimeout(async () => {
     try {
       const r = await api("/api/tidy/preview", tuPayload());
+      if (seq !== TU.pvSeq) return;   // edits moved on (or were cancelled) while this was loading
       TU.pv = {}; r.items.forEach(x => (TU.pv[x.id] = x));
       TU.pvList = r.items; TU.waiting = r.waiting;
       const y = window.scrollY;
@@ -1497,14 +1543,15 @@ function tuRefresh() {
   }, 250);
 }
 function tuReset() {
+  clearTimeout(tuTimer); TU.pvSeq = (TU.pvSeq || 0) + 1;
   TU.sel = new Set(); TU.names = {}; TU.pv = {}; TU.pvList = []; TU.place = null; TU.showAll = false;
   $("#tu-name-all").value = ""; $("#tu-when").value = ""; $("#tu-tags").value = ""; $("#tu-album").value = ""; $("#tu-place-all").checked = false;
 }
 
-$("#tu-crumbs").onclick = (e) => { const b = e.target.closest("[data-f]"); if (!b) return; TU.folder = b.dataset.f; TU.q = ""; $("#tu-q").value = ""; loadTidy(); };
-$("#tu-folder-cards").onclick = (e) => { const b = e.target.closest(".fcard"); if (!b) return; TU.folder = b.dataset.f; loadTidy(); window.scrollTo(0, 0); };
+$("#tu-crumbs").onclick = (e) => { const b = e.target.closest("[data-f]"); if (!b) return; TU.folder = b.dataset.f; TU.q = ""; $("#tu-q").value = ""; TU.limit = 600; loadTidy(); };
+$("#tu-folder-cards").onclick = (e) => { const b = e.target.closest(".fcard"); if (!b) return; TU.folder = b.dataset.f; TU.limit = 600; loadTidy(); window.scrollTo(0, 0); };
 let tuQTimer;
-$("#tu-q").addEventListener("input", (e) => { clearTimeout(tuQTimer); tuQTimer = setTimeout(() => { TU.q = e.target.value.trim(); loadTidy(); }, 350); });
+$("#tu-q").addEventListener("input", (e) => { clearTimeout(tuQTimer); tuQTimer = setTimeout(() => { TU.q = e.target.value.trim(); TU.limit = 600; loadTidy(); }, 350); });
 $("#tu-filter").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; TU.filter = b.dataset.k;
   $$("#tu-filter button").forEach(x => x.classList.toggle("on", x === b)); renderTidy(); };
 $("#tu-all").onchange = (e) => { TU.photos.filter(p => !p.needs).forEach(p => (e.target.checked ? TU.sel.add(p.id) : TU.sel.delete(p.id))); $("#tu-when").value = ""; renderTidy(); tuRefresh(); };
@@ -1660,8 +1707,8 @@ function updateSel() {
   $("#rv-all").indeterminate = k > 0 && k < total;
   $("#rv-count").textContent = k === total ? `All ${n(total)} selected` : `${n(k)} of ${n(total)} selected`;
   $$("[data-bulk]").forEach(b => (b.disabled = !k));
-  const ready = R.items.filter(i => !i.needs).length;
-  $("#rv-save").textContent = R.mode === "inbox" ? `Save & file ${plural(ready, "photo")}` : "Save changes";
+  const ready = (R.mode === "inbox" ? R.items : R.items.filter(i => R.sel.has(i.id))).filter(i => !i.needs).length;
+  $("#rv-save").textContent = R.mode === "inbox" ? `Save & file ${plural(ready, "photo")}` : `Save changes (${n(ready)})`;
   $("#rv-save").disabled = !ready;
 }
 
@@ -1734,11 +1781,16 @@ $("#rv-all").onchange = (e) => {
 $("#rv-prune-go").onclick = () => { const ids = R.justFiled; R.justFiled = null; $("#rv-prune").hidden = true; openPickSet(ids, "just filed"); };
 $("#rv-back").onclick = () => { const to = R.mode === "needs" ? "organize" : "browse"; R.mode = "inbox"; showTab(to); };
 $("#rv-save").onclick = () => {
-  if (R.mode === "inbox") R.justFiled = R.items.filter(i => !i.needs).map(i => i.id);
-  const waiting = R.items.filter(i => i.needs).length;
+  // Drive Preview files everything; the other views save only the ticked photos
+  const pool = R.mode === "inbox" ? R.items : R.items.filter(i => R.sel.has(i.id));
+  const waiting = pool.filter(i => i.needs).length;
   if (waiting && !confirm(`${plural(waiting, "photo still needs", "photos still need")} a date or time and will wait here. Save and file the others now?`)) return;
-  const ids = R.items.filter(i => !i.needs).map(i => i.id);
-  api("/api/organize/apply", { ids }).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
+  const ids = pool.filter(i => !i.needs).map(i => i.id);
+  if (!ids.length) return;
+  api("/api/organize/apply", { ids }).then(() => {
+    if (R.mode === "inbox") R.justFiled = ids;
+    refreshState();
+  }).catch(fail);
 };
 $("#rv-later").onclick = async () => {
   if (!confirm("Take these photos out of Drive Preview without renaming them? You can still organize them later.")) return;
@@ -2191,7 +2243,7 @@ $("#pp-back").onclick = () => { PP.detail = null; loadPeople(); };
     const st = await refreshState();
     if (!st.library) showSetup(st);
     else {
-      if (st.job && !st.job.finished) S.lastJobFinished = false;
+      if (st.job && st.job.finished) S.handledJob = st.job.id;   // finished before this window opened
       await loadFilters();
       loadAlbums();
       showTab("browse");

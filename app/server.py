@@ -76,9 +76,13 @@ def state():
     out = {"library": l.root if l else None, "error": LIB["error"], "exiftool": ET.available,
            "recent": cfg.get("recent", []), "mac": IS_MAC}
     if l:
-        if l._dupes is None and not (l.job and not l.job.finished):
-            l.dup_groups()
-        out["stats"] = l.stats()
+        busy = l.busy()
+        if not busy:
+            l.dupes_in_background()
+        # while something is running only the progress changes, so skip the counting
+        if not busy or getattr(l, "_last_stats", None) is None:
+            l._last_stats = l.stats()
+        out["stats"] = l._last_stats
         out["job"] = l.job.to_dict() if l.job else None
     return jsonify(out)
 
@@ -102,6 +106,9 @@ def set_library():
     path = os.path.expanduser((request.json or {}).get("path", "").strip())
     if not path or not os.path.isdir(path):
         abort(400, "I can't find that folder. Is the drive plugged in?")
+    old = LIB["lib"]
+    if old and old.busy():
+        abort(409, "Please wait until '%s' has finished before switching folders." % old.job.name)
     l = open_library(path)
     l.start_job("Scanning your photos", l.scan)
     return jsonify({"library": l.root})
@@ -398,13 +405,17 @@ def review_done():
 
 # ---------------- duplicates ----------------
 
-@app.route("/api/dupes")
+@app.route("/api/dupes", methods=["GET", "POST"])
 def dupes():
     groups = lib().dup_groups()
-    kind = request.args.get("kind", "")
+    b = request.get_json(silent=True) or {}
+    kind = b.get("kind", request.args.get("kind", ""))
     if kind:
         groups = [g for g in groups if g["kind"] == kind]
-    offset = int(request.args.get("offset", 0))
+    skip = set(b.get("skip") or [])   # groups you chose "Skip for now" on
+    if skip:
+        groups = [g for g in groups if g["key"] not in skip]
+    offset = int(b.get("offset", request.args.get("offset", 0)))
     exact = sum(1 for g in lib().dup_groups() if g["kind"] == "exact")
     return jsonify({"total": len(groups), "exact": exact,
                     "similar": len(lib().dup_groups()) - exact,
@@ -477,7 +488,8 @@ def organize_plan():
 @app.route("/api/tidy/browse")
 def tidy_browse():
     a = request.args
-    return jsonify(lib().tidy_browse(a.get("folder", ""), a.get("q", "").strip()))
+    return jsonify(lib().tidy_browse(a.get("folder", ""), a.get("q", "").strip(),
+                                     limit=min(int(a.get("limit", 600)), 20000)))
 
 
 def _tidy_args(b):

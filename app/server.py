@@ -1,6 +1,7 @@
 """Picture Perfect — local web app. Run with the launcher; opens in your browser."""
 import json
 import re
+import updater
 import os
 import subprocess
 import sys
@@ -86,6 +87,30 @@ def state():
         out["stats"] = l._last_stats
         out["job"] = l.job.to_dict() if l.job else None
     return jsonify(out)
+
+
+@app.route("/api/update")
+def update_state():
+    st = {k: v for k, v in updater.STATE.items() if k != "new_app"}
+    st["current"] = st.get("current") or updater.current_version()
+    return jsonify(st)
+
+
+@app.route("/api/update/check", methods=["POST"])
+def update_check():
+    threading.Thread(target=updater.check_and_download, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/update/install", methods=["POST"])
+def update_install():
+    l = LIB["lib"]
+    if l and l.busy():
+        abort(409, "Please wait until '%s' has finished, then restart to update." % l.job.name)
+    try:
+        return jsonify(updater.install_and_restart())
+    except RuntimeError as e:
+        abort(400, str(e))
 
 
 @app.route("/api/pick-folder", methods=["POST"])
@@ -219,9 +244,11 @@ def file_info(fid):
 
 @app.route("/thumb/<int:fid>")
 def thumb(fid):
-    p = lib().thumb_path(fid)
-    if not os.path.exists(p):
-        return send_from_directory(os.path.join(HERE, "static"), "placeholder.svg")
+    p = lib().ensure_thumb(fid)
+    if not p:
+        resp = send_from_directory(os.path.join(HERE, "static"), "placeholder.svg")
+        resp.headers["Cache-Control"] = "no-store"   # try again next time, it may be ready then
+        return resp
     resp = send_file(p, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "max-age=300"
     return resp
@@ -706,6 +733,7 @@ def init():
             LIB["error"] = str(e)
     elif last:
         LIB["error"] = "Your photo folder (%s) isn't available. Is the drive plugged in?" % last
+    updater.start_background_checks()   # quietly fetch a newer version, if there is one
 
 
 def run(port):

@@ -1624,6 +1624,27 @@ class Library:
                 "orientation": as_int(info.get("Orientation")), "camera": camera}
 
     # ---------- thumbnails ----------
+    def ensure_thumb(self, fid):
+        """A preview for any photo, made now if it's missing (a RAW partner uses its JPEG's)."""
+        p = self.thumb_path(fid)
+        if os.path.exists(p):
+            return p
+        r = self.get(fid)
+        if not r:
+            return None
+        if r["pair_of"]:
+            lead = self.thumb_path(r["pair_of"])
+            if os.path.exists(lead):
+                return lead
+        try:
+            fid2, sigs, ok = self._thumb_one(r["id"], r["path"], r["kind"])
+            dh, sc = sigs if sigs else (None, None)
+            self.x("UPDATE files SET dhash=COALESCE(dhash, ?), scene=COALESCE(scene, ?), thumb=? WHERE id=?",
+                   (dh, sc, 1 if ok else 2, fid))
+        except Exception as e:
+            print("preview failed:", r["path"], e)
+        return p if os.path.exists(p) else None
+
     def thumb_path(self, fid):
         d = os.path.join(self.data, "thumbs", "%02x" % (fid % 256))
         made = self.__dict__.setdefault("_thumb_dirs", set())
@@ -2293,8 +2314,10 @@ class Library:
         ids = [int(i) for i in ids]
         if not ids:
             return {"items": [], "taste": self.taste_info()}
-        rows = self.q("SELECT * FROM files WHERE status='active' AND id IN (%s) ORDER BY taken, path"
+        # a RAW travels with its JPEG: show the pair once (deleting the JPEG takes the RAW with it)
+        rows = self.q("SELECT * FROM files WHERE status='active' AND pair_of IS NULL AND id IN (%s) ORDER BY taken, path"
                       % ",".join("?" * len(ids)), ids)
+        raws = self._raw_map()
         cache = getattr(self, "_qcache", None)
         if cache is None:
             cache = self._qcache = {}
@@ -2315,7 +2338,8 @@ class Library:
                           "size": r["size"], "kind": r["kind"], "status": "new", "q": q, "dhash": r["dhash"],
                           "taken": r["taken"] if r["date_source"] not in NEEDS_DATE else None,
                           "timed": r["date_source"] not in NEEDS_DATE + NO_TIME,
-                          "rating": r["rating"], "flags": [], "burst": None, "keep": True, "why": ""})
+                          "rating": r["rating"], "flags": [], "burst": None, "keep": True, "why": "",
+                          "raw": raws.get(r["id"])})
         self._suggest_picks(items)
         model = self.taste_model()
         scored = []

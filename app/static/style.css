@@ -907,3 +907,7 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
 
 /* import: a photo going into an album that's already on the drive */
 .albumtag { font-size: 11px; color: var(--accent); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.upd { margin: 0 14px 10px; padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); font-size: 13px; }
+.upd b { display: block; font-size: 14px; margin-bottom: 2px; }
+.upd .dark { margin-top: 8px; width: 100%; padding: 8px 12px; }
+.upd .muted { color: var(--muted); }

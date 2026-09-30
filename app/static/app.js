@@ -264,7 +264,7 @@ function pickTile(it) {
     <div class="im" data-cull><img loading="lazy" src="/thumb/${it.i}" alt="">
       <span class="badge2" data-toggle>${keep ? "Keep" : "Delete"}</span>
       ${b ? `<span class="burst ${b.best ? "best" : ""}">${b.best ? "Sharpest of " + b.size : "Same moment · " + b.size}</span>` : ""}
-      ${it.kind === "video" ? `<span class="vid">▶ Video</span>` : ""}
+      ${it.kind === "video" ? `<span class="vid">▶ Video</span>` : it.raw ? `<span class="vid">RAW+JPEG</span>` : ""}
       ${it.favorite && keep ? `<span class="fav">★ Likely favorite</span>` : ""}
     </div>
     <div class="cap"><b>${esc(it.name)}</b>
@@ -3023,6 +3023,33 @@ $("#pp-d-actions").onclick = async (e) => {
 };
 $("#pp-back").onclick = () => { PP.detail = null; loadPeople(); };
 
+/* ------------------------------------------------------------------ updates */
+// A newer version downloads by itself in the background; one click restarts into it.
+async function checkUpdate() {
+  let u;
+  try { u = await api("/api/update"); } catch (e) { return setTimeout(checkUpdate, 60000); }
+  const box = $("#upd");
+  if (u.status === "downloading") {
+    box.hidden = false; $("#upd-go").hidden = true;
+    $("#upd-text").innerHTML = `<b>Getting version ${esc(u.latest)}…</b><span class="muted">${u.progress ? u.progress + "% downloaded · " : ""}you can keep working</span>`;
+  } else if (u.status === "ready") {
+    box.hidden = false; $("#upd-go").hidden = false;
+    $("#upd-text").innerHTML = `<b>Version ${esc(u.latest)} is ready</b><span class="muted">You have ${esc(u.current || "an older version")}. Restarting takes a few seconds.</span>`;
+  } else if (u.status === "available") {
+    box.hidden = false; $("#upd-go").hidden = true;
+    $("#upd-text").innerHTML = `<b>Version ${esc(u.latest)} is out</b><span class="muted">Download it from the Releases page.</span>`;
+  } else box.hidden = true;
+  if (u.status !== "ready") setTimeout(checkUpdate, u.status === "downloading" || u.status === "checking" ? 3000 : 10 * 60000);
+}
+$("#upd-go").onclick = async () => {
+  if (S.state && S.state.job && !S.state.job.finished) return toast(`Please wait until “${S.state.job.name}” has finished.`);
+  try {
+    await api("/api/update/install", {});
+    $("#upd-text").innerHTML = "<b>Updating…</b><span class='muted'>Picture Perfect will open again in a moment.</span>";
+    $("#upd-go").hidden = true;
+  } catch (e) { fail(e); }
+};
+
 /* ------------------------------------------------------------------ start */
 (async function start() {
   try {
@@ -3036,4 +3063,5 @@ $("#pp-back").onclick = () => { PP.detail = null; loadPeople(); };
     }
   } catch (e) { fail(e); }
   poll();
+  setTimeout(checkUpdate, 8000);
 })();

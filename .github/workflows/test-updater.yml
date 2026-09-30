@@ -1,0 +1,32 @@
+name: Test app updater
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: An older copy of the app, installed like on a Mac
+        run: |
+          mkdir -p /tmp/apps out
+          gh release download --pattern Picture-Perfect-Mac.zip --dir /tmp
+          ditto -x -k /tmp/Picture-Perfect-Mac.zip /tmp/apps
+          ls /tmp/apps
+      - name: Update it
+        run: python3 packaging/tests/update_test.py /tmp/apps out/update-test.txt
+      - uses: softprops/action-gh-release@v2
+        if: always()
+        with:
+          tag_name: map-test
+          name: Map download test (not an app release)
+          prerelease: true
+          files: out/*

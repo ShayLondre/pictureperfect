@@ -12,7 +12,7 @@ for name in ("exiftool", "models", "geo", "maps", "bin"):
     if os.path.isdir(p):
         datas.append((p, name))
 binaries = []
-hiddenimports = ["library", "faces", "server", "webview.platforms.cocoa", "Foundation"]
+hiddenimports = ["library", "faces", "server", "updater", "webview.platforms.cocoa", "Foundation"]
 for pkg in ("onnxruntime", "pillow_heif"):
     d, b, h = collect_all(pkg)
     datas += d

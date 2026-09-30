@@ -420,10 +420,8 @@ async function showImport(r) {
   $("#im-time").value = IM.base ? IM.base.slice(11, 16) : "";
   $("#im-date").disabled = $("#im-time").disabled = !IM.base;
   $("#im-tags").value = "";
-  $("#op-album-sel").innerHTML = `<option value="">Choose an album…</option>` +
-    IM.albums.map(a => `<option value="${esc(a.key)}">${esc(a.start.slice(0, 7).replace("-", "."))} ${esc(a.name)}</option>`).join("");
+  IM.album = null; IM.albumOf = {};
   $("#pp-albums").innerHTML = [...new Set(IM.albums.map(a => a.name))].map(n => `<option value="${esc(n)}">`).join("");
-  $("#op-album").checked = false;
   $("#op-rename").checked = true;
   $("#op-dupes").checked = true;
   $("#op-delete").checked = false;
@@ -453,12 +451,15 @@ function shiftIso(iso, sec) {
   const p = (x) => String(x).padStart(2, "0");
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
 }
-function albumChosen() {
-  if (!$("#op-album").checked) return null;
-  return IM.albums.find(a => a.key === $("#op-album-sel").value) || null;
+function albumChosen() { return IM.album || null; }
+function imAlbum(it) {   // the album this photo goes into — unless it was given another name
+  const al = IM.albumOf[it.i] || IM.album;
+  if (!al) return null;
+  return imNamePart(it).toLowerCase() === al.name.toLowerCase() ? al : null;
 }
 function imNamePart(it) {
   if (IM.over[it.i] !== undefined) return IM.over[it.i];
+  if (IM.albumOf[it.i]) return IM.albumOf[it.i].name;
   const al = albumChosen();
   if (al) return al.name;
   const ev = $("#im-event").value.trim();
@@ -495,8 +496,6 @@ function imGroupStart() {   // a trip or event stays in the month it began
     const k = imNamePart(i).toLowerCase(), t = imTaken(i);
     if (!starts[k] || t < starts[k]) starts[k] = t;
   });
-  const al = albumChosen();
-  if (al) starts[al.name.toLowerCase()] = al.start;
   return starts;
 }
 function imFolder(it, starts) {
@@ -507,6 +506,8 @@ function imFolder(it, starts) {
   if (mode === "year") return [t.slice(0, 4)];
   if (mode === "none") return [];
   if (mode === "year_month") return [t.slice(0, 4), t.slice(0, 7)];
+  const al = imAlbum(it);
+  if (al) return [al.month, al.folder];   // an album's folder, whatever the photo's own date
   const st = (starts[name.toLowerCase()] || t).slice(0, 7).replace("-", ".");
   return name ? [st, `${st} ${name}`.replace(/[. ]+$/, "")] : [t.slice(0, 7).replace("-", ".")];
 }
@@ -603,6 +604,9 @@ function renderImport() {
     (IM.base ? "Change the date or time to fix a camera clock — every photo moves by the same amount." : "No dates found in these photos.");
   $("#im-place").textContent = IM.bplace ? "📍 " + shortPlace(IM.bplace.label || placeName(IM.bplace)) : "+ Add a place";
   $("#im-place-clear").hidden = !IM.bplace;
+  $("#im-album").textContent = IM.album ? "📁 " + IM.album.folder : "+ Add to an album…";
+  $("#im-album-clear").hidden = !IM.album;
+  $("#im-event").disabled = !!IM.album;
   const withGps = sel.filter(i => i.place).length;
   $("#im-place-note").textContent = IM.bplace
     ? `Goes on ${plural(sel.length - withGps - sel.filter(i => IM.places[i.i]).length, "photo")} without a location.${withGps ? ` ${plural(withGps, "photo")} with GPS keep${withGps === 1 ? "s" : ""} ${withGps === 1 ? "its" : "their"} exact spot.` : ""}`
@@ -629,7 +633,8 @@ function renderTable(list) {
     const when = t ? fmtShort(t) : null;
     const newCell = !np ? `<span class="nodate">No date — <button class="link" data-adddate>add one</button></span>`
       : !$("#op-rename").checked ? `<span class="muted">Keeps its name</span>`
-      : `<div class="fname ${IM.over[it.i] !== undefined ? "mine" : ""}"><span>${esc(np.prefix)}</span><input data-name value="${esc(np.np)}" placeholder="name" spellcheck="false">${numSuffix(it) ? `<span class="num" title="Another photo has this name, so this one is numbered">${esc(numSuffix(it))}</span>` : ""}<span>${esc(np.ext)}</span></div>`;
+      : `<div class="fname ${IM.over[it.i] !== undefined ? "mine" : ""}"><span>${esc(np.prefix)}</span><input data-name value="${esc(np.np)}" placeholder="name" spellcheck="false">${numSuffix(it) ? `<span class="num" title="Another photo has this name, so this one is numbered">${esc(numSuffix(it))}</span>` : ""}<span>${esc(np.ext)}</span></div>` +
+        (imAlbum(it) ? `<div class="albumtag" title="Goes in the album's folder">📁 ${esc(imAlbum(it).folder)}</div>` : "");
     return `<div class="tr ${on ? "" : "off"} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}">
       <div class="c-chk"><input type="checkbox" data-sel ${on ? "checked" : ""}></div>
       <div class="c-img"><img loading="lazy" src="/import-thumb/${it.i}" alt=""></div>
@@ -693,6 +698,7 @@ function renderDetail() {
     <div class="dname">${esc(it.name)}</div>
     <div class="dmeta">${esc(bits)}</div>
     <div class="dmeta">${when ? `${when.d}${imHasTime(it) ? " · " + when.t : ""}` : `<span class="nodate">No date yet</span>`}</div>
+    ${imAlbum(it) ? `<div class="dmeta">📁 ${esc(imAlbum(it).folder)}</div>` : ""}
     ${imPlace(it) ? `<div class="dmeta">📍 ${esc(shortPlace(imPlace(it).label))}${imPlace(it).how === "gps" ? "" : " <span class='muted'>(added)</span>"}</div>` : ""}
     ${!IM.editing ? `<div class="drow"><button class="ghost small-btn" id="im-edit-btn">Edit Metadata…</button></div>` : `
     <div class="dedit">
@@ -700,6 +706,7 @@ function renderDetail() {
       <label class="fl">Name<input id="ed-name" value="${esc(np)}" placeholder="Event or place"></label>
       <label class="fl">Date &amp; time<input id="ed-time" type="datetime-local" step="60" value="${t ? t.slice(0, 16) : ""}"></label>
       <div class="fl">Location<div class="placerow"><button class="ghost placepick" id="ed-place">${imPlace(it) ? "📍 " + esc(shortPlace(imPlace(it).label)) : "+ Add a place"}</button>${IM.places[it.i] ? `<button class="link" id="ed-place-clear">Clear</button>` : ""}</div></div>
+      <div class="fl">Album<div class="placerow"><button class="ghost placepick" id="ed-album">${IM.albumOf[it.i] ? "📁 " + esc(IM.albumOf[it.i].folder) : "+ Add to an album…"}</button>${IM.albumOf[it.i] ? `<button class="link" id="ed-album-clear">Clear</button>` : ""}</div></div>
       <label class="fl">Tags<input id="ed-tags" list="tag-list" value="${esc(tags.join(", "))}" placeholder="e.g. Hugh, Sarah"></label>
       <div class="fl">Rating<span class="stars big" id="ed-stars">${starsHtml(IM.stars[it.i] || 0, "data-estar")}</span></div>
       <div class="drow"><button class="link" id="ed-reset">Reset this photo</button><button class="dark" id="ed-done">Done</button></div>
@@ -723,10 +730,18 @@ function renderDetail() {
     openPicker([], "Place for " + it.name, null, imPlace(it) ? imPlace(it).label : "",
                (c) => { IM.places[it.i] = c; IM.sel.add(it.i); renderImport(); });
   };
+  $("#ed-album").onclick = () => {
+    save();
+    openGrouper([], [it], null, (g) => {
+      IM.albumOf[it.i] = g; delete IM.over[it.i]; IM.sel.add(it.i); renderImport();
+    });
+  };
+  const ac = $("#ed-album-clear");
+  if (ac) ac.onclick = () => { save(); delete IM.albumOf[it.i]; delete IM.over[it.i]; renderImport(); };
   const pc = $("#ed-place-clear");
   if (pc) pc.onclick = () => { save(); delete IM.places[it.i]; renderImport(); };
   ["#ed-name", "#ed-time", "#ed-tags"].forEach(sel => $(sel).addEventListener("keydown", (e) => { if (e.key === "Enter") $("#ed-done").click(); }));
-  $("#ed-reset").onclick = () => { delete IM.over[it.i]; delete IM.times[it.i]; delete IM.tags[it.i]; delete IM.stars[it.i]; delete IM.places[it.i]; IM.editing = false; renderImport(); };
+  $("#ed-reset").onclick = () => { delete IM.over[it.i]; delete IM.times[it.i]; delete IM.tags[it.i]; delete IM.stars[it.i]; delete IM.places[it.i]; delete IM.albumOf[it.i]; IM.editing = false; renderImport(); };
   $("#ed-stars").onclick = (e) => {
     const b = e.target.closest("[data-estar]"); if (!b) return;
     const v = +b.dataset.estar;
@@ -798,8 +813,11 @@ $("#im-folders").onchange = async (e) => {
   renderImport();
   try { await api("/api/organize/settings", { folders: e.target.value }); } catch (err) { fail(err); }
 };
-$("#op-album-sel").addEventListener("change", () => { $("#op-album").checked = !!$("#op-album-sel").value; renderImport(); });
-$("#op-album").onchange = renderImport;
+$("#im-album").onclick = () => {
+  const sel = IM.items.filter(i => IM.sel.has(i.i));
+  openGrouper([], sel, null, (g) => { IM.album = g; renderImport(); });
+};
+$("#im-album-clear").onclick = () => { IM.album = null; renderImport(); };
 $("#op-rename").onchange = renderImport;
 $("#op-dupes").onchange = (e) => {
   IM.items.filter(i => i.status !== "new").forEach(i => (e.target.checked ? IM.sel.delete(i.i) : IM.sel.add(i.i)));
@@ -818,6 +836,7 @@ $("#im-go").onclick = () => {
   api("/api/import/commit", {
     include, event: al ? "" : $("#im-event").value.trim(), shift: imShift(), album: al ? al.key : null,
     names: pick(IM.over), times: pick(IM.times), tags, ratings: pick(IM.stars),
+    albums: Object.fromEntries(Object.entries(pick(IM.albumOf)).map(([k, g]) => [k, g.key])),
     places: pick(IM.places), batch_place: IM.bplace,
     rename: $("#op-rename").checked, delete_source: $("#op-delete").checked,
   }).then(() => { importScreen("running"); S.lastJobFinished = false; refreshState(); }).catch(fail);
@@ -2630,9 +2649,11 @@ function fmtShift(sec) {
 /* ------------------------------------------------------------------ add to group */
 const G = { ids: [], items: [], groups: [], chosen: null, done: null };
 
-async function openGrouper(ids, items, done) {
-  G.ids = ids; G.items = items; G.done = done; G.chosen = null;
-  $("#gp-title").textContent = `Add ${items.length === 1 ? (items[0].kind === "video" ? "this video" : "this photo") : plural(items.length, "item")} to a group`;
+async function openGrouper(ids, items, done, pick) {
+  // with `pick`, just choose an album (e.g. while importing) and hand it back
+  G.ids = ids; G.items = items; G.done = done; G.chosen = null; G.pick = pick || null;
+  const what = items.length === 1 ? (items[0].kind === "video" ? "this video" : "this photo") : plural(items.length, "item");
+  $("#gp-title").textContent = pick ? `Add ${what} to an album` : `Add ${what} to a group`;
   $("#gp-q").value = "";
   $("#gp-opts").hidden = true;
   $("#gp-save").disabled = true;
@@ -2654,7 +2675,7 @@ function renderGroups() {
   $("#gp-list").innerHTML = list.length ? list.map(g => `
     <button class="gp ${G.chosen && G.chosen.key === g.key ? "on" : ""}" data-key="${esc(g.key)}">
       <span class="th">${g.thumbs.map(id => `<img loading="lazy" src="/thumb/${id}" alt="">`).join("")}</span>
-      <span><b>${esc(g.name)}</b>
+      <span><b>${esc(g.name)}</b>${G.pick ? ` <span class="m">📁 ${esc(g.folder)}</span>` : ""}
         <span class="m">${fmtRange(g.start, g.end)} · ${plural(g.count, "item")}${g.place ? " · " + esc(g.place) : ""}</span></span>
     </button>`).join("")
     : `<p class="muted small">No groups match. Groups are photos that share a name — give some photos a name first.</p>`;
@@ -2664,6 +2685,7 @@ $("#gp-q").addEventListener("input", renderGroups);
 $("#gp-list").onclick = (e) => {
   const b = e.target.closest(".gp"); if (!b) return;
   G.chosen = G.groups.find(g => g.key === b.dataset.key);
+  if (G.pick) { $("#grouper").hidden = true; return G.pick(G.chosen); }
   renderGroups();
   $("#gp-opts").hidden = false;
   $("#gp-chosen").textContent = `${G.chosen.name} · ${fmtRange(G.chosen.start, G.chosen.end)}`;

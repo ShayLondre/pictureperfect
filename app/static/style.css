@@ -904,3 +904,6 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
 .clash .muted { display: inline; }
 .clash-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 #rv-clash { flex-wrap: wrap; }
+
+/* import: a photo going into an album that's already on the drive */
+.albumtag { font-size: 11px; color: var(--accent); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

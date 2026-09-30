@@ -123,6 +123,9 @@
           <div class="fl">Location
             <div class="placerow"><button class="ghost placepick" id="im-place">+ Add a place</button><button class="link" id="im-place-clear" hidden>Clear</button></div></div>
           <div class="hint" id="im-place-note">For photos without their own location. Photos with GPS keep their exact spot.</div>
+          <div class="fl">Album
+            <div class="placerow"><button class="ghost placepick" id="im-album">+ Add to an album…</button><button class="link" id="im-album-clear" hidden>Clear</button></div></div>
+          <div class="hint" id="im-album-note">For photos that belong with ones already on your drive — they take the album's name and go in its folder, keeping their own dates. To add just one photo, click it and use Edit Metadata.</div>
           <label class="fl">Tags<input id="im-tags" placeholder="e.g. Hugh, Eliza, beach" autocomplete="off"></label>
           <div class="hint" id="im-tags-note">Separate with commas. Added to every selected photo, alongside any you set on one photo.</div>
           <label class="fl">Filename format
@@ -197,7 +200,6 @@
             <option value="year">Year</option>
             <option value="none">No subfolders</option>
           </select></label>
-        <label class="opt"><input type="checkbox" id="op-album"> Add to album: <select id="op-album-sel"></select></label>
       </div>
       <div class="spacer"></div>
       <button class="ghost" id="im-cancel">Cancel</button>

@@ -1200,6 +1200,49 @@ def date_clash(taken, filename):
     return fn if has_time else fn[:10]
 
 
+def group_runs(items, pin_of=None):
+    """Split [(row, name)] sharing one name (sorted by date) into trips: a gap of more than two
+    weeks starts a new one. Photos added to an album on purpose (group_pin 'YYYY.MM|name') join
+    the trip that began that month, whatever their own date — so they land in its folder."""
+    pinned, loose = defaultdict(list), []
+    for it in items:
+        pin = pin_of(it[0]) if pin_of else None
+        (pinned[pin] if pin else loose).append(it)
+    runs = []
+    if loose:
+        cur = [loose[0]]
+        for prev, it in zip(loose, loose[1:]):
+            try:
+                gap = iso_to_ts(it[0]["taken"]) - iso_to_ts(prev[0]["taken"])
+            except (ValueError, OverflowError):
+                gap = 0
+            if gap > GROUP_GAP:
+                runs.append(cur)
+                cur = []
+            cur.append(it)
+        runs.append(cur)
+    extra = []   # (month, pinned rows): the album's first month, and the photos added to it
+    for month, its in pinned.items():
+        home = next((run for run in runs if run[0][0]["taken"][:7].replace("-", ".") == month), None)
+        if home is not None:
+            home.extend(its)
+        else:
+            extra.append((month, its))
+    # each run: the trip's own photos in date order, then any photos pinned to it
+    return [(run[0][0]["taken"][:7].replace("-", "."), run) for run in runs] + extra
+
+
+def pin_month(name):
+    """Returns pin_of(row): the month a photo was pinned to, if it still carries that album's name."""
+    def pin_of(row):
+        pin = row.get("group_pin") if hasattr(row, "get") else None
+        if not pin or "|" not in pin:
+            return None
+        month, key = pin.split("|", 1)
+        return month if key == name else None
+    return pin_of
+
+
 class Library:
     def __init__(self, root, exiftool=None, geo=None):
         self.root = os.path.abspath(root)
@@ -1233,7 +1276,7 @@ class Library:
                              ("rating", "INTEGER"), ("rating_pending", "INTEGER DEFAULT 0"),
                              ("scene", "TEXT"), ("faces_done", "INTEGER DEFAULT 0"), ("people", "TEXT"),
                              ("pair_of", "INTEGER"), ("gps_precision", "TEXT"), ("gps_radius", "REAL"),
-                             ("place_id", "INTEGER"), ("date_alt", "TEXT"), ("date_ok", "INTEGER DEFAULT 0")):
+                             ("place_id", "INTEGER"), ("date_alt", "TEXT"), ("date_ok", "INTEGER DEFAULT 0"), ("group_pin", "TEXT")):
                 if col not in cols:
                     self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
             self.db.commit()
@@ -1517,7 +1560,7 @@ class Library:
     def _sync_pairs(self):
         """Keep each RAW's details identical to its JPEG."""
         cols = ["taken", "date_source", "lat", "lon", "place", "city", "gps_source", "title", "tags", "rating",
-                "people", "gps_pending", "date_pending", "tags_pending", "rating_pending", "loc_skip", "batch"]
+                "people", "gps_pending", "date_pending", "tags_pending", "rating_pending", "loc_skip", "batch", "group_pin"]
         sets = ", ".join("%s=(SELECT p.%s FROM files p WHERE p.id=files.pair_of)" % (c, c) for c in cols)
         self.x("UPDATE files SET " + sets + " WHERE pair_of IS NOT NULL AND status='active'")
         self.x("UPDATE files SET filedates=0 WHERE pair_of IS NOT NULL AND status='active' AND "
@@ -2465,7 +2508,7 @@ class Library:
 
     def _commit_import(self, job, include, ratings=None, event=None, shift=0, album=None,
                        rename=True, delete_source=False, names=None, times=None, tags=None,
-                       places=None, batch_place=None):
+                       places=None, batch_place=None, albums=None):
         p = getattr(self, "pending_import", None)
         if not p:
             raise ValueError("Please check the folder again.")
@@ -2482,7 +2525,8 @@ class Library:
         times = {int(k): v for k, v in (times or {}).items() if v}
         tags = {int(k): v for k, v in (tags or {}).items() if v}
         places = {int(k): v for k, v in (places or {}).items() if v}
-        named_paths, timed_paths, tagged_paths, placed_paths = {}, {}, {}, {}
+        albums = {int(k): v for k, v in (albums or {}).items() if v}
+        named_paths, timed_paths, tagged_paths, placed_paths, album_paths = {}, {}, {}, {}, {}
         job.step("Copying photos to your drive", len(chosen))
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H%M%S")
         dest_dir = os.path.join(self.root, INBOX, stamp)
@@ -2524,6 +2568,8 @@ class Library:
                     tagged_paths[rel] = tags[it["i"]]
                 if it["i"] in places:
                     placed_paths[rel] = places[it["i"]]
+                if it["i"] in albums:
+                    album_paths[rel] = albums[it["i"]]
                 if it["i"] in ratings:
                     rated[os.path.relpath(dest, self.root)] = ratings[it["i"]]
                 side = find_sidecar(it["src"])
@@ -2563,6 +2609,16 @@ class Library:
         def one(path):
             row = self.q("SELECT id FROM files WHERE path=? AND pair_of IS NULL", (path,))
             return row[0]["id"] if row else None
+        by_album = defaultdict(list)
+        for path, key in album_paths.items():
+            fid = one(path)
+            if fid:
+                by_album[key].append(fid)
+        for key, fids in by_album.items():
+            try:
+                self.add_to_group(fids, key, keep_dates=True)
+            except ValueError:
+                pass
         for path, nm in named_paths.items():
             fid = one(path)
             if fid:
@@ -3435,7 +3491,7 @@ class Library:
 
     def groups(self):
         """Existing groups: photos sharing a name, split where there's a gap of more than two weeks."""
-        rows = self.q("""SELECT id, path, title, taken, place, lat, lon, kind FROM files
+        rows = self.q("""SELECT id, path, title, taken, place, lat, lon, kind, group_pin FROM files
                          WHERE status='active' AND batch IS NULL AND pair_of IS NULL ORDER BY taken""")
         by = defaultdict(list)
         for r in rows:
@@ -3444,18 +3500,7 @@ class Library:
                 by[nm.lower()].append((r, nm))
         out = []
         for key, items in by.items():
-            runs, cur = [], [items[0]]
-            for prev, it in zip(items, items[1:]):
-                try:
-                    gap = iso_to_ts(it[0]["taken"]) - iso_to_ts(prev[0]["taken"])
-                except (ValueError, OverflowError):
-                    gap = 0
-                if gap > 14 * 86400:
-                    runs.append(cur)
-                    cur = []
-                cur.append(it)
-            runs.append(cur)
-            for run in runs:
+            for month, run in group_runs(items, pin_month(key)):
                 rs = [r for r, _ in run]
                 places = Counter(r["place"] for r in rs if r["place"])
                 anchor = next((r for r in rs if r["lat"] is not None), None)
@@ -3463,7 +3508,8 @@ class Library:
                 out.append({
                     "key": "%s|%s" % (key, rs[0]["taken"][:10]),
                     "name": Counter(nm for _, nm in run).most_common(1)[0][0],
-                    "start": rs[0]["taken"], "end": rs[-1]["taken"], "count": len(rs),
+                    "start": min(r["taken"] for r in rs), "end": max(r["taken"] for r in rs), "count": len(rs),
+                    "month": month, "folder": "%s %s" % (month, Counter(nm for _, nm in run).most_common(1)[0][0]),
                     "videos": sum(1 for r in rs if r["kind"] == "video"),
                     "place": places.most_common(1)[0][0] if places else None,
                     "lat": anchor["lat"] if anchor else None, "lon": anchor["lon"] if anchor else None,
@@ -3478,6 +3524,9 @@ class Library:
             raise ValueError("I couldn't find that group any more.")
         ids = [int(i) for i in ids]
         self.edit(ids, title=g["name"])
+        # they belong in this album's folder, even when their own dates are weeks away from it
+        self.x("UPDATE files SET group_pin=? WHERE id=?",
+               [("%s|%s" % (g["month"], g["name"].lower()), i) for i in ids], many=True)
         if g["lat"] is not None:
             missing = [r["id"] for r in self.q("SELECT id, lat FROM files WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)
                        if r["lat"] is None]
@@ -3525,7 +3574,7 @@ class Library:
         with self.lock:
             if self._gm is not None:
                 return self._gm
-            rows = self.q("SELECT id, path, title, place, city, taken, date_source FROM files WHERE status='active' ORDER BY taken")
+            rows = self.q("SELECT id, path, title, place, city, taken, date_source, group_pin FROM files WHERE status='active' ORDER BY taken")
             by = defaultdict(list)
             for r in rows:
                 if r["date_source"] in NEEDS_DATE:
@@ -3534,20 +3583,8 @@ class Library:
                 if nm:
                     by[nm.lower()].append((r, nm))
             gm = {}
-            for items in by.values():
-                runs, cur = [], [items[0]]
-                for prev, it in zip(items, items[1:]):
-                    try:
-                        gap = iso_to_ts(it[0]["taken"]) - iso_to_ts(prev[0]["taken"])
-                    except (ValueError, OverflowError):
-                        gap = 0
-                    if gap > GROUP_GAP:
-                        runs.append(cur)
-                        cur = []
-                    cur.append(it)
-                runs.append(cur)
-                for run in runs:
-                    month = run[0][0]["taken"][:7].replace("-", ".")
+            for key, items in by.items():
+                for month, run in group_runs(items, pin_month(key)):
                     name = Counter(nm for _, nm in run).most_common(1)[0][0]
                     for r, _ in run:
                         gm[r["id"]] = (month, name)

@@ -1,0 +1,82 @@
+name: Prepare offline map assets
+
+# Run once (and again whenever the map pieces should be refreshed). The Mac app build
+# picks up the newest "map-assets" release.
+on:
+  workflow_dispatch:
+    inputs:
+      world_maxzoom:
+        description: "How detailed the built-in world map is (5 = countries & big cities)"
+        default: "5"
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Map engine (MapLibre), PMTiles reader and the Protomaps map style
+        run: |
+          set -euo pipefail
+          mkdir -p out/vendor/map tmp
+          cd tmp
+          npm pack maplibre-gl@5 pmtiles@4 @protomaps/basemaps@5
+          for f in *.tgz; do mkdir -p "${f%.tgz}"; tar xzf "$f" -C "${f%.tgz}"; done
+          cp maplibre-gl-*/package/dist/maplibre-gl.js maplibre-gl-*/package/dist/maplibre-gl.css ../out/vendor/map/
+          cp maplibre-gl-*/package/LICENSE.txt ../out/vendor/map/LICENSE-maplibre.txt || true
+          cp pmtiles-*/package/dist/pmtiles.js ../out/vendor/map/
+          cp protomaps-basemaps-*/package/dist/basemaps.js ../out/vendor/map/
+          ls -la ../out/vendor/map
+      - name: Fonts and map symbols
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/protomaps/basemaps-assets tmp/assets
+          mkdir -p out/vendor/map/fonts out/vendor/map/sprites
+          for f in "Noto Sans Regular" "Noto Sans Medium" "Noto Sans Italic"; do cp -R "tmp/assets/fonts/$f" out/vendor/map/fonts/; done
+          cp tmp/assets/fonts/OFL.txt out/vendor/map/fonts/
+          cp tmp/assets/sprites/v4/light* out/vendor/map/sprites/
+      - name: pmtiles tool (for downloading map regions)
+        run: |
+          set -euo pipefail
+          mkdir -p out/bin tmp/pm
+          gh release download -R protomaps/go-pmtiles --pattern '*Darwin_arm64*' --dir tmp/pm
+          gh release download -R protomaps/go-pmtiles --pattern '*Linux_x86_64*' --dir tmp/pm
+          cd tmp/pm && for f in *; do case "$f" in *.zip) unzip -o -q "$f" -d "${f%.zip}";; *.tar.gz) mkdir -p "${f%.tar.gz}"; tar xzf "$f" -C "${f%.tar.gz}";; esac; done; cd ../..
+          cp "$(find tmp/pm -path '*Darwin_arm64*' -name pmtiles -type f | head -1)" out/bin/pmtiles
+          cp "$(find tmp/pm -path '*Linux_x86_64*' -name pmtiles -type f | head -1)" tmp/pmtiles-linux
+          chmod +x out/bin/pmtiles tmp/pmtiles-linux
+      - name: Built-in world map
+        run: |
+          set -euo pipefail
+          KEY=$(curl -fsSL https://build-metadata.protomaps.dev/builds.json | python3 -c "import json,sys; b=json.load(sys.stdin); print(sorted(x['key'] for x in b)[-1])")
+          echo "Protomaps build: $KEY"
+          mkdir -p out/maps
+          tmp/pmtiles-linux extract "https://build.protomaps.com/$KEY" out/maps/world.pmtiles --maxzoom=${{ inputs.world_maxzoom }}
+          ls -la out/maps
+          echo "$KEY" > out/maps/BUILD.txt
+      - name: Offline place search
+        run: |
+          set -euo pipefail
+          mkdir -p out/geo tmp/g
+          for f in allCountries.zip alternateNamesV2.zip admin1CodesASCII.txt admin2Codes.txt countryInfo.txt; do
+            curl -fsSL "https://download.geonames.org/export/dump/$f" -o "tmp/g/$f"; done
+          python3 packaging/build_places.py tmp/g/allCountries.zip tmp/g/alternateNamesV2.zip tmp/g/admin1CodesASCII.txt tmp/g/countryInfo.txt out/geo/features.tsv.gz
+          gzip -c tmp/g/admin2Codes.txt > out/geo/admin2Codes.txt.gz
+          ls -la out/geo
+      - name: Package
+        run: |
+          cd out && zip -q -r ../map-assets.zip . && cd .. && ls -la map-assets.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: map-assets
+          name: Offline map assets
+          prerelease: true
+          files: map-assets.zip
+          body: "Map engine, world map, fonts and place names that the Picture Perfect app carries inside it. Not an app release."

@@ -2003,7 +2003,8 @@ class Library:
                 if it["lat"] is not None:
                     it["city"] = self.geo.city(it["lat"], it["lon"])
                     it["place"] = self.geo.label(it["lat"], it["lon"])
-        self.pending_import = {"source": source, "items": items}
+        # a tag unique to this check, so previews from an earlier import are never shown by mistake
+        self.pending_import = {"source": source, "items": items, "token": "%x" % int(time.time() * 1000)}
         counts = Counter(i["status"] for i in items)
         return {"import_check": True, "total": len(items), "new": counts["new"], "exact": counts["exact"],
                 "similar": counts["similar"], "repeat": counts["repeat"]}
@@ -2447,6 +2448,7 @@ class Library:
         groups = [{"key": g["key"], "name": g["name"], "start": g["start"], "end": g["end"], "count": g["count"],
                    "thumbs": g["thumbs"][:1]} for g in self.groups()[:200]]
         return {"source": p["source"], "items": out, "settings": self.settings(), "albums": groups,
+                "token": p.get("token", ""),
                 "library": os.path.basename(self.root.rstrip(os.sep)) or self.root}
 
     def names_in_use(self, targets):

@@ -115,7 +115,7 @@
         <p class="sub small">Review and edit filenames, dates and destination before importing.</p>
         <div class="detail" id="im-detail"></div>
         <div class="panel">
-          <div class="panel-head">Applies to All Selected Photos</div>
+          <div class="panel-head" id="im-all-head">Applies to the Ticked Photos</div>
           <label class="fl">Event / Collection<input id="im-event" placeholder="e.g. Lake Como" autocomplete="off" list="pp-albums"></label>
           <div class="fl"><span>Date &amp; Time <span class="flsub">(first photo)</span></span>
             <div class="dtrow"><input id="im-date" type="date"><input id="im-time" type="time"></div></div>
@@ -240,7 +240,7 @@
       <div id="rv-prune-text"></div>
       <button class="primary" id="rv-prune-go">Prune these photos</button>
     </div>
-    <div class="empty" id="rv-empty" hidden><div class="big-check">✓</div>You're all caught up.<br><span class="small">New photos land here when you use <b>Add photos…</b> or when a rescan finds new ones.</span></div>
+    <div class="empty" id="rv-empty" hidden><div class="big-check">✓</div>Nothing is waiting here.<br><span class="small">Drive Preview holds photos that still need something before they're filed: photos with no date, photos you imported without renaming, and new photos that <b>Rescan</b> finds on your drive (for example ones copied there in Finder). It appears in the sidebar only when there's something to do.</span></div>
     <div class="foot" id="rv-foot" hidden><button class="link" id="rv-later">Mark as reviewed without renaming</button></div>
   </section>
 

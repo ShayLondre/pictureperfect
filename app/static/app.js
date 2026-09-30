@@ -63,6 +63,8 @@ async function refreshState() {
     $("#b-dupes").textContent = s.dup_groups ? n(s.dup_groups) : "";
     $("#b-loc").textContent = s.no_location ? n(s.no_location) : "";
     $("#b-inbox").textContent = s.inbox ? n(s.inbox) : "";
+    // Drive Preview only matters when photos are waiting there (no date, not renamed, or found by a rescan)
+    $("#tabs [data-tab=inbox]").hidden = !s.inbox && S.tab !== "inbox";
   }
   renderJob(st.job);
   return st;
@@ -402,6 +404,7 @@ async function showImport(r) {
   IM.settings = r.settings || {};
   IM.albums = r.albums || [];
   IM.source = r.source;
+  IM.token = r.token || Date.now().toString(16);
   IM.shown = 120;
   IM.sel = new Set(IM.items.filter(i => i.status === "new").map(i => i.i));
   IM.over = {}; IM.times = {}; IM.tags = {}; IM.stars = {}; IM.q = ""; IM.editing = false;
@@ -414,11 +417,8 @@ async function showImport(r) {
   $("#im-event").value = "";
   $("#im-format").value = IM.settings.time === "0" ? "0" : "1";
   // only photos with a real time move with the Date & Time box (date-only ones keep their day, as on import)
-  const dated = IM.items.filter(i => i.taken && i.has_time).map(i => i.taken).sort();
-  IM.base = dated.length ? dated[0].slice(0, 16) : null;
-  $("#im-date").value = IM.base ? IM.base.slice(0, 10) : "";
-  $("#im-time").value = IM.base ? IM.base.slice(11, 16) : "";
-  $("#im-date").disabled = $("#im-time").disabled = !IM.base;
+  IM.dateTouched = false;
+  imSetBase();
   $("#im-tags").value = "";
   IM.album = null; IM.albumOf = {};
   $("#pp-albums").innerHTML = [...new Set(IM.albums.map(a => a.name))].map(n => `<option value="${esc(n)}">`).join("");
@@ -477,10 +477,20 @@ function imPlace(it) {   // what location this photo will end up with, and where
   if (IM.bplace) return { label: IM.bplace.label || placeName(IM.bplace), city: placeName(IM.bplace), how: "batch" };
   return null;
 }
+// the Date & Time box starts at the earliest TICKED photo and moves only the ticked photos
+function imSetBase() {
+  const dated = IM.items.filter(i => IM.sel.has(i.i) && i.taken && i.has_time && !IM.times[i.i]).map(i => i.taken).sort();
+  IM.base = dated.length ? dated[0].slice(0, 16) : null;
+  if (!IM.dateTouched) {
+    $("#im-date").value = IM.base ? IM.base.slice(0, 10) : "";
+    $("#im-time").value = IM.base ? IM.base.slice(11, 16) : "";
+  }
+  $("#im-date").disabled = $("#im-time").disabled = !IM.base;
+}
 function imTaken(it) {
   if (IM.times[it.i]) return IM.times[it.i];
   if (!it.taken) return null;
-  return it.has_time ? shiftIso(it.taken, imShift()) : it.taken;
+  return it.has_time && IM.sel.has(it.i) ? shiftIso(it.taken, imShift()) : it.taken;
 }
 function imHasTime(it) { return !!IM.times[it.i] || it.has_time; }
 function imNewName(it) {
@@ -599,9 +609,13 @@ function renderImport() {
   });
   const first = sel.find(i => imTaken(i)) || IM.items.find(i => imTaken(i));
   $("#im-preview").textContent = first ? imFinalName(first) : "—";
+  if (!IM.dateTouched) imSetBase();
   const sh = imShift();
-  $("#im-date-note").textContent = sh ? `Every photo moves by ${fmtShift(sh)}, keeping its order.` :
-    (IM.base ? "Change the date or time to fix a camera clock — every photo moves by the same amount." : "No dates found in these photos.");
+  const ticked = sel.length;
+  $("#im-all-head").textContent = `Applies to the ${plural(ticked, "Ticked Photo", "Ticked Photos")}`;
+  $("#im-date-note").textContent = sh ? `The ${plural(ticked, "ticked photo")} move${ticked === 1 ? "s" : ""} by ${fmtShift(sh)}, keeping their order. Unticked photos don't change.` :
+    (IM.base ? `Shown: the first ticked photo. Change it to fix a camera clock — all ${plural(ticked, "ticked photo")} move by the same amount. For just one photo, click it and use “Change this photo's date & time”.`
+      : "None of the ticked photos have a date yet.");
   $("#im-place").textContent = IM.bplace ? "📍 " + shortPlace(IM.bplace.label || placeName(IM.bplace)) : "+ Add a place";
   $("#im-place-clear").hidden = !IM.bplace;
   $("#im-album").textContent = IM.album ? "📁 " + IM.album.folder : "+ Add to an album…";
@@ -637,7 +651,7 @@ function renderTable(list) {
         (imAlbum(it) ? `<div class="albumtag" title="Goes in the album's folder">📁 ${esc(imAlbum(it).folder)}</div>` : "");
     return `<div class="tr ${on ? "" : "off"} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}">
       <div class="c-chk"><input type="checkbox" data-sel ${on ? "checked" : ""}></div>
-      <div class="c-img"><img loading="lazy" src="/import-thumb/${it.i}" alt=""></div>
+      <div class="c-img"><img loading="lazy" src="/import-thumb/${it.i}?v=${IM.token}" alt=""></div>
       <div class="c-old">${esc(it.name)}${it.raw ? `<span class="tagx">+ ${esc(EXT(it.raw).slice(1).toUpperCase())}</span>` : ""}
         ${it.status !== "new" ? `<span class="tagx warn">${MATCH_LABEL[it.status]}</span>` : it.kind === "video" ? `<span class="tagx">Video</span>` : ""}</div>
       <div class="c-arrow">→</div>
@@ -662,7 +676,7 @@ function renderGrid(list) {
     const nn = imFinalName(it);
     const f = imFolder(it, starts);
     return `<div class="ic ${on ? "on" : ""} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}" title="${nn ? esc((f || []).join(" › ")) : ""}">
-      <div class="ph"><img loading="lazy" src="/import-thumb/${it.i}" alt=""><span class="tick" data-sel>${on ? "✓" : ""}</span>
+      <div class="ph"><img loading="lazy" src="/import-thumb/${it.i}?v=${IM.token}" alt=""><span class="tick" data-sel>${on ? "✓" : ""}</span>
         ${it.status !== "new" ? `<span class="tagr warn">${MATCH_LABEL[it.status]}</span>` : it.raw ? `<span class="tagr">RAW+JPEG</span>` : it.kind === "video" ? `<span class="tagr">Video</span>` : ""}</div>
       <div class="oldn">${esc(it.name)}</div>
       ${nn ? ($("#op-rename").checked ? `<div class="newn ${IM.over[it.i] !== undefined ? "mine" : ""}">${esc(nn)}</div>` : `<div class="oldn">Keeps its name for now</div>`) : `<div class="note">No date — add one on the left</div>`}
@@ -694,13 +708,13 @@ function renderDetail() {
   const np = imNamePart(it);
   const tags = IM.tags[it.i] || [];
   $("#im-detail").innerHTML = `
-    <div class="dimg"><img src="/import-media/${it.i}" alt="" onerror="this.src='/import-thumb/${it.i}'"></div>
+    <div class="dimg"><img src="/import-media/${it.i}?v=${IM.token}" alt="" onerror="this.src='/import-thumb/${it.i}?v=${IM.token}'"></div>
     <div class="dname">${esc(it.name)}</div>
     <div class="dmeta">${esc(bits)}</div>
     <div class="dmeta">${when ? `${when.d}${imHasTime(it) ? " · " + when.t : ""}` : `<span class="nodate">No date yet</span>`}</div>
     ${imAlbum(it) ? `<div class="dmeta">📁 ${esc(imAlbum(it).folder)}</div>` : ""}
     ${imPlace(it) ? `<div class="dmeta">📍 ${esc(shortPlace(imPlace(it).label))}${imPlace(it).how === "gps" ? "" : " <span class='muted'>(added)</span>"}</div>` : ""}
-    ${!IM.editing ? `<div class="drow"><button class="ghost small-btn" id="im-edit-btn">Edit Metadata…</button></div>` : `
+    ${!IM.editing ? `<div class="drow"><button class="ghost small-btn" id="im-time-btn">Change this photo's date &amp; time</button><button class="ghost small-btn" id="im-edit-btn">Edit this photo…</button></div>` : `
     <div class="dedit">
       <div class="panel-head">This photo only</div>
       <label class="fl">Name<input id="ed-name" value="${esc(np)}" placeholder="Event or place"></label>
@@ -713,6 +727,8 @@ function renderDetail() {
     </div>`}`;
   const eb = $("#im-edit-btn");
   if (eb) eb.onclick = () => { IM.editing = true; renderDetail(); setTimeout(() => $("#ed-name").focus(), 20); };
+  const tb = $("#im-time-btn");
+  if (tb) tb.onclick = () => { IM.editing = true; renderDetail(); setTimeout(() => { $("#ed-time").focus(); try { $("#ed-time").showPicker(); } catch (e) { /* ignore */ } }, 20); };
   if (!IM.editing) return;
   const save = () => {
     const v = $("#ed-name").value.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
@@ -803,6 +819,7 @@ $("#im-view").onclick = (e) => { const b = e.target.closest("button"); if (!b) r
 $("#im-search-btn").onclick = () => { const s2 = $("#im-search"); s2.hidden = !s2.hidden; if (!s2.hidden) s2.focus(); else { s2.value = ""; IM.q = ""; renderImport(); } };
 $("#im-search").addEventListener("input", (e) => { IM.q = e.target.value.trim(); IM.shown = 120; renderImport(); });
 $("#im-more").onclick = () => { IM.shown += 120; renderImport(); };
+["#im-date", "#im-time"].forEach(sel => $(sel).addEventListener("input", () => { IM.dateTouched = true; }));   // before redrawing
 ["#im-event", "#im-date", "#im-time", "#im-format"].forEach(sel => $(sel).addEventListener("input", renderImport));
 $("#im-place").onclick = () => openPicker([], "Location for these photos", null, IM.bplace ? IM.bplace.label : $("#im-event").value.trim(),
   (c) => { IM.bplace = c; renderImport(); });

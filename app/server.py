@@ -159,7 +159,7 @@ def import_media(idx):
     path, mime = lib().import_preview(idx)
     if not path or not os.path.exists(path):
         abort(404)
-    return send_file(path, mimetype=mime, conditional=True)
+    return no_cache(send_file(path, mimetype=mime, conditional=True, max_age=0))
 
 
 @app.route("/api/names-in-use", methods=["POST"])
@@ -171,8 +171,14 @@ def names_in_use():
 def import_thumb(idx):
     p = lib().import_thumb(idx)
     if not os.path.exists(p):
-        return send_from_directory(os.path.join(HERE, "static"), "placeholder.svg")
-    return send_file(p, mimetype="image/jpeg")
+        return no_cache(send_from_directory(os.path.join(HERE, "static"), "placeholder.svg"))
+    return no_cache(send_file(p, mimetype="image/jpeg", max_age=0))
+
+
+def no_cache(resp):
+    """Import previews are numbered 0, 1, 2… for every import — never let the browser reuse old ones."""
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
 
 
 @app.route("/api/job/dismiss", methods=["POST"])

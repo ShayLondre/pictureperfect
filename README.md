@@ -24,7 +24,7 @@ The app is built for Apple silicon Macs (M1 and newer).
 3. **Organize:** **Import N Photos** copies, renames and files everything in one go, saving dates, places and names into the photos.
 4. **Review:** see where everything went, then **Prune these photos** if you like. Photos without a date wait in Drive Preview.
 
-**Drive Preview** — holds photos that still need something before they can be filed: photos with no date, photos you imported without renaming, or new files a rescan found on the drive. Each photo shows its new name before anything is renamed. You can change:
+**Drive Preview** — shows up in the sidebar only when photos are waiting. It holds photos that still need something before they can be filed: photos with no date, photos you imported without renaming, or new files a rescan found on the drive. Each photo shows its new name before anything is renamed. You can change:
 
 - the **name** (location and event, e.g. *Bequia Regatta*)
 - the **date & time** — if the camera clock was wrong, select them all, choose **Date & time…**, and set the first photo to the right time; the rest shift by the same amount and stay in order

@@ -10,7 +10,7 @@ import webbrowser
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from library import IS_MAC, ExifTool, Geo, Library, app_dir, search_places_online  # noqa: E402
+from library import IS_MAC, ExifTool, Geo, Library, app_dir, parse_coords, search_places_online  # noqa: E402
 
 PORT = int(os.environ.get("PHOTO_ORGANIZER_PORT", "8765"))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -478,17 +478,11 @@ def places_search():
     q = request.args.get("q", "").strip()
     l = lib()
     out = []
-    m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*°?\s*([NS])?\s*[,; ]\s*(-?\d+(?:\.\d+)?)\s*°?\s*([EW])?\s*$", q, re.I)
-    if m:   # pasted coordinates, e.g. 39.0963, -120.0324 or 39.0963 N, 120.0324 W
-        lat, lon = float(m.group(1)), float(m.group(3))
-        if (m.group(2) or "").upper() == "S":
-            lat = -abs(lat)
-        if (m.group(4) or "").upper() == "W":
-            lon = -abs(lon)
-        if -90 <= lat <= 90 and -180 <= lon <= 180:
-            out.append({"name": "%.5f, %.5f" % (lat, lon), "label": "Coordinates", "lat": lat, "lon": lon,
-                        "kind": "Coordinates", "zoom": 16})
-        return jsonify(out)
+    c = parse_coords(q)
+    if c:   # pasted coordinates, e.g. 39.0963, -120.0324 or 13°00.580'N 061°13.758'W
+        lat, lon = c
+        return jsonify([{"name": "%.5f, %.5f" % (lat, lon), "label": "Coordinates", "lat": lat, "lon": lon,
+                         "kind": "Coordinates", "zoom": 16}])
     if len(q) < 2:
         return jsonify([])
     ql = q.lower()

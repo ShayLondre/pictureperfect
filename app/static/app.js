@@ -1064,7 +1064,9 @@ function renderViewer() {
     <dl>
       <div><dt>Taken</dt><dd>${fmtWhen(it.taken)}${ds ? `<div class="${it.date_source === "file" ? "note" : "muted small"}">${ds}</div>` : ""}</dd></div>
       <div><dt>Place</dt><dd>${it.place ? esc(it.place) : `<span class="muted">No location</span>`}
-        ${it.lat != null ? `<div class="muted small">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}${it.gps_source === "nearby" ? " · from a nearby photo" : it.gps_source === "manual" ? " · set by you" : ""}</div>` : ""}
+        ${it.lat != null ? `<div class="muted small v-ll">${fmtLatLon(it.lat, it.lon)}
+            <button class="link" id="v-copy" title="Copy coordinates">Copy</button><button class="link" id="v-onmap">Show on map</button></div>
+          <div class="muted small">${it.gps_source === "nearby" ? "From a nearby photo" : it.gps_source === "manual" ? "Set by you" : "From the camera's GPS"}${it.precision && it.precision !== "exact" ? " · approximate" : ""}</div>` : ""}
         ${it.city && it.place && !it.place.startsWith(it.city) ? `<div class="muted small">Filed under ${esc(it.city)}</div>` : ""}</dd></div>
       ${it.camera ? `<div><dt>Camera</dt><dd>${esc(it.camera)}</dd></div>` : ""}
       ${it.people && it.people.length ? `<div><dt>People</dt><dd>${it.people.map(t => `<span class="chip" style="padding-right:10px">${esc(t)}</span>`).join(" ")}</dd></div>` : ""}
@@ -1084,6 +1086,10 @@ function renderViewer() {
     <p class="muted small" style="margin-top:14px">${V.i + 1} of ${n(V.list.length)} · ← → to move, Esc to close</p>`;
   const rv = $("#v-reveal");
   if (rv) rv.onclick = () => api("/api/reveal/" + it.id, {});
+  const vc = $("#v-copy");
+  if (vc) vc.onclick = () => copyText(`${it.lat.toFixed(6)}, ${it.lon.toFixed(6)}`);
+  const vo = $("#v-onmap");
+  if (vo) vo.onclick = () => { closeViewer(); openPlaces([it.id], true); };
   const vg = $("#v-guess");
   if (vg) vg.onclick = () => openGuesser(it, () => { api("/api/file/" + it.id).then(f => { Object.assign(it, f); renderViewer(); }); });
   const vm = $("#v-match");
@@ -1440,6 +1446,10 @@ function renderMine() {
   }
 }
 
+async function copyText(txt) {
+  try { await navigator.clipboard.writeText(txt); toast("Copied " + txt); }
+  catch (e) { prompt("Copy these coordinates:", txt); }
+}
 function fmtLatLon(lat, lon) {
   return `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? "N" : "S"}, ${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? "E" : "W"}`;
 }
@@ -1475,13 +1485,21 @@ function plShowSource(src, ids) {
   PL.shown = 240;
   $("#pl-filter").hidden = src !== "located";
   if (src === "located") $("#pl-filter").focus();
-  plLoadPhotos().then(() => { renderInsp(); if (src !== "none" && src !== "located") plFit(); });
+  plLoadPhotos().then(async () => {
+    renderInsp();
+    if (src !== "none" && src !== "located") {
+      if (PL.focusOnLoad) { PL.focusOnLoad = false; await initMap(); const p = PL.photos.find(x => x.lat != null);
+        if (p && PL.map) PL.map.jumpTo({ center: [p.lon, p.lat], zoom: 15 }); }
+      else plFit();
+    }
+  });
 }
 
 // open Places with particular photos chosen, e.g. from Tidy Up
-function openPlaces(ids) {
+function openPlaces(ids, focus) {
   showTab("locations");
   plShowSource("ids", ids);
+  if (focus) PL.focusOnLoad = true;
 }
 
 function renderFilm() {
@@ -1492,7 +1510,8 @@ function renderFilm() {
     if (d !== day) { day = d; html += `<div class="day">${d ? fmtDay(d) : "No date"}</div>`; }
     const tag = p.lat != null ? `<span class="tag">${esc(shortPlace(p.place || "") || "Has a location")}${p.precision && p.precision !== "exact" ? " (approx.)" : ""}</span>`
       : p.suggest ? `<span class="tag sug" title="Suggested from ${esc(p.suggest.why)}">≈ ${esc(shortPlace(p.suggest.place || ""))}</span>` : "";
-    html += `<div class="pl-ph ${PL.sel.has(p.id) ? "on" : ""}" data-i="${i}" data-id="${p.id}" title="${esc(p.name)}">
+    const tip = p.name + (p.lat != null ? `\n${p.place || ""}\n${fmtLatLon(p.lat, p.lon)}` : "");
+    html += `<div class="pl-ph ${PL.sel.has(p.id) ? "on" : ""}" data-i="${i}" data-id="${p.id}" title="${esc(tip)}">
       <img loading="lazy" src="/thumb/${p.id}" alt=""><span class="ck"></span>${p.kind === "video" ? `<span class="vid">▶</span>` : ""}${tag}</div>`;
   });
   if (PL.photos.length > PL.shown) html += `<button class="ghost more" id="pl-more">Show ${n(Math.min(240, PL.photos.length - PL.shown))} more</button>`;
@@ -1530,11 +1549,11 @@ $("#pl-film").onclick = (e) => {
     const [a, b] = [Math.min(PL.last, i), Math.max(PL.last, i)];
     const on = !PL.sel.has(id) || true;
     for (let j = a; j <= b; j++) on ? PL.sel.add(PL.photos[j].id) : PL.sel.delete(PL.photos[j].id);
-    renderFilm();
+    renderFilm(); if (!PL.pin) renderInsp();
   } else {
     PL.sel.has(id) ? PL.sel.delete(id) : PL.sel.add(id);
     el.classList.toggle("on", PL.sel.has(id));
-    plSelChanged();
+    if (!PL.pin) renderInsp(); else plSelChanged();
   }
   PL.last = i;
 };
@@ -1545,8 +1564,8 @@ $("#pl-film").ondblclick = (e) => {
 $("#pl-film").addEventListener("wheel", (e) => {   // a mouse wheel scrolls the filmstrip sideways
   if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { $("#pl-film").scrollLeft += e.deltaY; e.preventDefault(); }
 }, { passive: false });
-$("#pl-all").onclick = () => { PL.photos.forEach(p => PL.sel.add(p.id)); renderFilm(); };
-$("#pl-none").onclick = () => { PL.sel.clear(); renderFilm(); };
+$("#pl-all").onclick = () => { PL.photos.forEach(p => PL.sel.add(p.id)); renderFilm(); if (!PL.pin) renderInsp(); };
+$("#pl-none").onclick = () => { PL.sel.clear(); renderFilm(); if (!PL.pin) renderInsp(); };
 $("#pl-src").onclick = (e) => { const b = e.target.closest("button"); if (b) plShowSource(b.dataset.v); };
 let plFilterTimer;
 $("#pl-filter").addEventListener("input", () => { clearTimeout(plFilterTimer); plFilterTimer = setTimeout(() => { PL.sel.clear(); plLoadPhotos().then(plFit); }, 300); });
@@ -1607,6 +1626,23 @@ function plSetPrec(v) {
   plRadius();
 }
 
+// where the selected photos are now (so a wrong place is easy to spot and fix)
+function plCurrentHtml() {
+  const located = PL.photos.filter(p => PL.sel.has(p.id) && p.lat != null);
+  if (!located.length) return "";
+  const groups = new Map();
+  located.forEach(p => { const k = `${p.lat.toFixed(4)},${p.lon.toFixed(4)}`; if (!groups.has(k)) groups.set(k, { p, n: 0 }); groups.get(k).n++; });
+  const first = [...groups.values()][0].p;
+  const head = groups.size === 1
+    ? `<b>${esc((first.place || "").split(",")[0].trim() || "Current location")}</b><div>${esc((first.place || "").split(",").slice(1).join(",").trim())}</div>
+       <div class="ll">${fmtLatLon(first.lat, first.lon)}</div>`
+    : `<b>${plural(located.length, "selected photo")} in ${n(groups.size)} different places</b>
+       <div class="ll">${[...groups.values()].slice(0, 4).map(g => esc(shortPlace(g.p.place || "") || fmtLatLon(g.p.lat, g.p.lon)) + ` (${g.n})`).join(" · ")}</div>`;
+  return `<div class="pl-cur"><div class="muted small">${located.length === 1 ? "This photo is at" : groups.size === 1 ? `These ${plural(located.length, "photo")} are at` : "Now at"}</div>${head}
+    <div class="row2">${groups.size === 1 ? `<button class="link" data-cur="edit">Move this pin</button><button class="link" data-cur="copy">Copy coordinates</button>` : ""}
+    <button class="link" data-cur="show">Show on map</button></div></div>`;
+}
+
 function renderInsp() {
   const has = !!PL.pin;
   $("#pl-form").hidden = !has;
@@ -1617,7 +1653,7 @@ function renderInsp() {
       ? `<div class="pl-minelist"><h5>My Places</h5>${PL.mine.map(p => `<button class="ghost" data-mine="${p.id}">${p.starred ? "★ " : ""}${esc(p.name)}<span class="muted small"> · ${plural(p.photos, "photo")}</span></button>`).join("")}</div>` : "";
     $("#pl-insp-empty").innerHTML = `<div class="pl-empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg></div>
       <b>Choose a location</b>
-      <p>Select photos below, then search for a place, pick one of My Places, or click the map to drop a pin. Drag the pin to fine-tune it.</p>${list}`;
+      <p>Select photos below, then search for a place (or type coordinates), pick one of My Places, or click the map to drop a pin. Drag the pin to fine-tune it.</p>${plCurrentHtml()}${list}`;
     return plSelChanged();
   }
   const i = PL.info || {};
@@ -1636,6 +1672,16 @@ $("#pl-insp").onclick = (e) => {
   const m = e.target.closest("[data-mine]");
   if (m) { const p = PL.mine.find(x => x.id === +m.dataset.mine); if (p) plUseMine(p, true); return; }
   if (e.target.id === "pl-use-sugg") return plUseSugg();
+  const cur = e.target.closest("[data-cur]");
+  if (cur) {
+    const located = PL.photos.filter(p => PL.sel.has(p.id) && p.lat != null);
+    const p = located[0]; if (!p) return;
+    if (cur.dataset.cur === "copy") return copyText(`${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`);
+    if (cur.dataset.cur === "show") return plFit();
+    // start from where they are now: drag the pin, rename, then Apply
+    if (PL.map) PL.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(PL.map.getZoom(), 15) });
+    return plSetPin(p.lat, p.lon, { prec: p.precision || "exact", name: shortPlace(p.place || "") });
+  }
   const t = e.target.closest("#pl-tags button");
   if (t) { PL.tags.splice(+t.dataset.k, 1); renderInsp(); }
 };
@@ -2069,6 +2115,7 @@ function renderTidy() {
       <div class="ph"><img loading="lazy" src="/thumb/${p.id}" alt=""><span class="tick" data-sel>${on ? "✓" : ""}</span>
         ${p.raw ? `<span class="tagr">RAW+JPEG</span>` : p.kind === "video" ? `<span class="tagr">Video</span>` : ""}</div>
       <div class="oldn" title="${esc(p.path)}">${esc(p.name)}</div>
+      <div class="loc ${p.lat == null ? "none" : ""}" title="${p.lat != null ? esc((p.place || "") + "\n" + fmtLatLon(p.lat, p.lon)) : ""}">${p.lat != null ? "📍 " + esc((p.place || "").split(",")[0].trim() || "Location") + ` · ${fmtLatLon(p.lat, p.lon)}` : "No location"}</div>
       ${p.needs ? `<div class="note">Needs a date first — add one in Drive Preview</div>`
         : `<div class="fname ${TU.names[p.id] !== undefined ? "mine" : ""} ${same ? "same" : ""}" title="${same ? "Already has the Picture Perfect name" : esc((v.folder_new || "").split("/").join(" › "))}"><span>${esc(v.prefix)}</span><input data-name value="${esc(np)}" spellcheck="false">${v.suffix ? `<span class="num">${esc(v.suffix)}</span>` : ""}<span>${esc(v.ext)}</span></div>`}
     </div>`;

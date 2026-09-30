@@ -891,3 +891,10 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
 .pl-minelist { display: flex; flex-direction: column; gap: 6px; margin-top: 18px; text-align: left; }
 .pl-minelist .ghost { text-align: left; }
 .pl-minelist h5 { margin: 0 0 2px; font-size: 13px; color: var(--ink); }
+.tcard .loc { font-size: 12px; color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tcard .loc.none { opacity: .7; }
+.pl-cur { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 16px; font-size: 13px; }
+.pl-cur b { display: block; margin: 0 0 2px; font-size: 14px; }
+.pl-cur .ll { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pl-cur .row2 { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.v-ll { display: flex; align-items: center; gap: 6px; }

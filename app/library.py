@@ -590,6 +590,37 @@ def named_after_place(r):
     return False
 
 
+def parse_coords(text):
+    """Read coordinates the way people write them:
+    39.0963, -120.0324 · 39.0963 N 120.0324 W · 13°00'34.8"N 61°13'45.5"W · 13 00.580N 061 13.758W (chart style)."""
+    t = (text or "").strip().upper()
+    t = t.replace("º", "°").replace("’", "'").replace("′", "'").replace("″", '"').replace("”", '"').replace("''", '"')
+    if not t or not re.search(r"\d", t):
+        return None
+    # split into the latitude half and the longitude half
+    m = re.match(r"^\s*([NS]?\s*[-+]?[\d.]+(?:[°\s:]+[\d.]+'?)?(?:[\s:]*[\d.]+\"?)?\s*[NS]?)\s*[,;/ ]\s*"
+                 r"([EW]?\s*[-+]?[\d.]+(?:[°\s:]+[\d.]+'?)?(?:[\s:]*[\d.]+\"?)?\s*[EW]?)\s*$", t)
+    if not m:
+        return None
+
+    def one(part, pos, neg):
+        hemi = re.findall("[%s%s]" % (pos, neg), part)
+        nums = [float(x) for x in re.findall(r"[-+]?\d+(?:\.\d+)?", part)]
+        if not nums or len(nums) > 3:
+            return None
+        sign = -1 if nums[0] < 0 else 1
+        deg = abs(nums[0]) + (nums[1] / 60.0 if len(nums) > 1 else 0) + (nums[2] / 3600.0 if len(nums) > 2 else 0)
+        if len(nums) > 1 and (nums[1] >= 60 or (len(nums) > 2 and nums[2] >= 60)):
+            return None
+        if hemi and hemi[-1] == neg:
+            sign = -1
+        return sign * deg
+    lat, lon = one(m.group(1), "N", "S"), one(m.group(2), "E", "W")
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return round(lat, 6), round(lon, 6)
+
+
 def fmt_bytes(n):
     n = float(n or 0)
     for unit in ("bytes", "KB", "MB", "GB", "TB"):
@@ -2578,7 +2609,7 @@ class Library:
                 "width": r["width"], "height": r["height"], "size": r["size"],
                 "camera": r["camera"], "thumb": r["thumb"], "status": r["status"],
                 "tags": split_tags(r.get("tags")), "title": r.get("title"), "rating": r.get("rating"),
-                "people": split_tags(r.get("people")),
+                "people": split_tags(r.get("people")), "precision": r.get("gps_precision"),
                 "raw": self._raw_map().get(r["id"])}
 
     def _raw_map(self):
@@ -3488,7 +3519,7 @@ class Library:
             photos.append(dict(self._split_name(r, new), id=r["id"], name=os.path.basename(r["path"]), path=r["path"],
                                taken=r["taken"], date_source=r["date_source"], place=r["place"], kind=r["kind"],
                                thumb=r["thumb"], tags=split_tags(r["tags"]), raw=raws.get(r["id"]),
-                               lat=r["lat"], needs=r["date_source"] in NEEDS_DATE + NEEDS_TIME,
+                               lat=r["lat"], lon=r["lon"], needs=r["date_source"] in NEEDS_DATE + NEEDS_TIME,
                                tidy=new == r["path"]))
         dated = sorted([d for d in subs.values() if d["name"][:1].isdigit()], key=lambda d: d["name"], reverse=True)
         other = sorted([d for d in subs.values() if not d["name"][:1].isdigit()], key=lambda d: d["name"].lower())

@@ -1,5 +1,6 @@
 """Picture Perfect — local web app. Run with the launcher; opens in your browser."""
 import json
+import re
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ import webbrowser
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from library import IS_MAC, ExifTool, Geo, Library, app_dir  # noqa: E402
+from library import IS_MAC, ExifTool, Geo, Library, app_dir, search_places_online  # noqa: E402
 
 PORT = int(os.environ.get("PHOTO_ORGANIZER_PORT", "8765"))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -468,6 +469,121 @@ def set_location():
 def skip_location():
     b = request.json or {}
     return jsonify(lib().skip_location(b["ids"], b.get("skip", True)))
+
+
+# ---------- Places page ----------
+
+@app.route("/api/places/search")
+def places_search():
+    q = request.args.get("q", "").strip()
+    l = lib()
+    out = []
+    m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*°?\s*([NS])?\s*[,; ]\s*(-?\d+(?:\.\d+)?)\s*°?\s*([EW])?\s*$", q, re.I)
+    if m:   # pasted coordinates, e.g. 39.0963, -120.0324 or 39.0963 N, 120.0324 W
+        lat, lon = float(m.group(1)), float(m.group(3))
+        if (m.group(2) or "").upper() == "S":
+            lat = -abs(lat)
+        if (m.group(4) or "").upper() == "W":
+            lon = -abs(lon)
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            out.append({"name": "%.5f, %.5f" % (lat, lon), "label": "Coordinates", "lat": lat, "lon": lon,
+                        "kind": "Coordinates", "zoom": 16})
+        return jsonify(out)
+    if len(q) < 2:
+        return jsonify([])
+    ql = q.lower()
+    for p in l.my_places():
+        if ql in p["name"].lower() or any(ql in t.lower() for t in p["tags"]):
+            out.append({"name": p["name"], "label": ", ".join(x for x in (p["city"], p["state"], p["country"]) if x),
+                        "lat": p["lat"], "lon": p["lon"], "kind": "My place", "place_id": p["id"], "zoom": 16})
+    out += l.geo.search_all(q, limit=12)
+    if len(out) < 3 and request.args.get("online") == "1":
+        try:
+            out += [dict(r, kind="Online result", zoom=13) for r in search_places_online(q, limit=5)]
+        except Exception:
+            pass
+    return jsonify(out[:15])
+
+
+@app.route("/api/places/details")
+def places_details():
+    return jsonify(lib().geo.details(float(request.args["lat"]), float(request.args["lon"])))
+
+
+@app.route("/api/places/mine")
+def places_mine():
+    return jsonify(lib().my_places())
+
+
+@app.route("/api/places/save", methods=["POST"])
+def places_save():
+    return jsonify(lib().save_place(request.json or {}))
+
+
+@app.route("/api/places/delete", methods=["POST"])
+def places_delete():
+    return jsonify(lib().delete_place((request.json or {})["id"]))
+
+
+@app.route("/api/places/points")
+def places_points():
+    return jsonify(lib().place_points())
+
+
+@app.route("/api/places/photos", methods=["GET", "POST"])
+def places_photos():
+    b = request.get_json(silent=True) or {}
+    return jsonify(lib().places_photos(ids=b.get("ids")))
+
+
+@app.route("/api/places/apply", methods=["POST"])
+def places_apply():
+    b = request.json or {}
+    l = lib()
+    ids = [int(i) for i in b.get("ids") or []]
+    if not ids:
+        abort(400, "Choose some photos first.")
+    l.start_job("Setting the location on %d photos" % len(ids),
+                lambda job: l.geotag(job, ids, b["lat"], b["lon"], b.get("name"), b.get("precision", "exact"),
+                                     b.get("radius"), b.get("place_id")))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/map/info")
+def map_info():
+    info = lib().map_info()
+    info["world"] = bool(info["world"])
+    return jsonify(info)
+
+
+@app.route("/api/map/estimate", methods=["POST"])
+def map_estimate():
+    b = request.json or {}
+    return jsonify(lib().map_estimate(b["bbox"], int(b.get("maxzoom", 15))))
+
+
+@app.route("/api/map/download", methods=["POST"])
+def map_download():
+    b = request.json or {}
+    l = lib()
+    name = (b.get("name") or "Map").strip()
+    l.start_job("Downloading the %s map" % name,
+                lambda job: l.map_download(job, name, [float(x) for x in b["bbox"]], int(b.get("maxzoom", 15))))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/map/delete", methods=["POST"])
+def map_delete():
+    return jsonify(lib().map_delete((request.json or {})["id"]))
+
+
+@app.route("/maps/<name>.pmtiles")
+def map_tiles(name):
+    path = lib().map_file(name)
+    if not path or not os.path.exists(path):
+        abort(404)
+    # the map reads small pieces of these files as needed (HTTP range requests)
+    return send_file(path, mimetype="application/octet-stream", conditional=True, max_age=3600)
 
 
 @app.route("/api/places")

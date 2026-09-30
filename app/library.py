@@ -7,6 +7,7 @@ Written for Python 3.9+ (the version that ships with macOS developer tools).
 import bisect
 import contextlib
 import csv
+import gzip
 import datetime as dt
 import hashlib
 import json
@@ -570,6 +571,79 @@ class ExifTool:
 # Offline place names (GeoNames, downloaded once, ~12 MB)
 # --------------------------------------------------------------------------- #
 
+def fold(text):
+    """Lower-case and drop accents, so 'cote' finds 'Côte'."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in t if not unicodedata.combining(c)).lower().strip()
+
+
+def fmt_bytes(n):
+    n = float(n or 0)
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if n < 1000 or unit == "TB":
+            return ("%d %s" if unit == "bytes" else "%.1f %s") % (n, unit)
+        n /= 1000.0
+
+
+def pmtiles_tool():
+    for d in (os.environ.get("PO_BIN_DIR"), os.path.join(app_dir(), "bin")):
+        if d and os.path.exists(os.path.join(d, "pmtiles")):
+            return os.path.join(d, "pmtiles")
+    return shutil.which("pmtiles")
+
+
+def latest_map_build():
+    """Newest worldwide OpenStreetMap map from Protomaps (only needed to download a region)."""
+    req = urllib.request.Request("https://build-metadata.protomaps.dev/builds.json", headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            builds = json.load(r)
+    except Exception as e:
+        raise RuntimeError("Downloading maps needs an internet connection (%s)." % e)
+    key = sorted(b["key"] for b in builds)[-1]
+    return "https://build.protomaps.com/" + key
+
+
+# west, south, east, north
+MAP_PRESETS = [
+    {"name": "Eastern Caribbean", "bbox": [-65.6, 10.0, -59.3, 18.8]},
+    {"name": "Grenada & the Grenadines", "bbox": [-61.9, 11.9, -61.1, 13.45]},
+    {"name": "Virgin Islands", "bbox": [-65.2, 17.6, -64.2, 18.8]},
+    {"name": "Bahamas", "bbox": [-79.6, 20.8, -72.6, 27.4]},
+    {"name": "California", "bbox": [-124.5, 32.5, -114.1, 42.05]},
+    {"name": "Lake Tahoe area", "bbox": [-120.35, 38.75, -119.8, 39.35]},
+    {"name": "Florida", "bbox": [-87.7, 24.4, -79.9, 31.1]},
+    {"name": "New York City", "bbox": [-74.3, 40.45, -73.65, 40.95]},
+    {"name": "Italy", "bbox": [6.6, 35.4, 18.6, 47.1]},
+    {"name": "France", "bbox": [-5.2, 41.3, 9.7, 51.2]},
+    {"name": "Spain & Portugal", "bbox": [-9.6, 35.9, 4.4, 43.9]},
+    {"name": "Greece", "bbox": [19.3, 34.7, 29.7, 41.8]},
+    {"name": "United Kingdom & Ireland", "bbox": [-10.7, 49.8, 1.9, 60.9]},
+    {"name": "Mexico", "bbox": [-118.5, 14.5, -86.7, 32.8]},
+    {"name": "United States (very large)", "bbox": [-125.0, 24.4, -66.9, 49.4]},
+]
+
+
+FEATURE_KIND = {"LK": "Lake", "LKS": "Lakes", "RSV": "Reservoir", "BAY": "Bay", "BAYS": "Bays", "COVE": "Cove",
+                "ANCH": "Anchorage", "HBR": "Harbour", "MAR": "Marina", "ISL": "Island", "ISLS": "Islands",
+                "ATOL": "Atoll", "RF": "Reef", "BCH": "Beach", "MT": "Mountain", "MTS": "Mountains", "PK": "Peak",
+                "VLC": "Volcano", "PRK": "Park", "RESN": "Nature reserve", "ADM1": "State / region",
+                "ADM2": "County / region", "PCLI": "Country", "PCLD": "Country", "TERR": "Territory",
+                "RGN": "Region", "VAL": "Valley", "CAPE": "Cape", "PEN": "Peninsula", "GLCR": "Glacier",
+                "FLLS": "Waterfall", "STM": "River", "SEA": "Sea", "STRT": "Strait", "GULF": "Gulf",
+                "HTL": "Hotel", "RSRT": "Resort", "AIRP": "Airport", "MUS": "Museum", "CSTL": "Castle",
+                "CH": "Church", "MNMT": "Monument", "HSTS": "Historic site", "RUIN": "Ruins", "PAL": "Palace",
+                "ZOO": "Zoo", "SQR": "Square", "BDG": "Bridge", "LTHSE": "Lighthouse", "UNIV": "University",
+                "STDM": "Stadium", "AMUS": "Theme park", "VIN": "Vineyard", "DAM": "Dam", "LGN": "Lagoon"}
+FEATURE_WEIGHT = {"PCLI": 5000000, "PCLD": 3000000, "TERR": 2000000, "ADM1": 1000000, "SEA": 800000,
+                  "RGN": 400000, "ISLS": 150000, "LK": 120000, "ISL": 100000, "MTS": 90000, "BAY": 80000,
+                  "GULF": 80000, "ADM2": 60000, "PRK": 60000, "MT": 50000, "PK": 50000, "VLC": 50000}
+FEATURE_ZOOM = {"PCLI": 5, "PCLD": 5, "TERR": 7, "ADM1": 6, "ADM2": 9, "SEA": 5, "RGN": 7, "ISLS": 11,
+                "LK": 10, "BAY": 11, "GULF": 7, "MTS": 8, "ISL": 12, "PRK": 11, "ANCH": 14, "MAR": 15,
+                "HTL": 16, "RSRT": 15, "BCH": 15, "COVE": 14, "HBR": 14, "MUS": 16, "CSTL": 16, "CH": 16}
+
+
 class Geo:
     SOURCES = {
         "cities500.zip": "https://download.geonames.org/export/dump/cities500.zip",
@@ -644,7 +718,7 @@ class Geo:
                             continue   # historical, abandoned or destroyed places
                         cc = p[8]
                         entry = (lat, lon, p[1], admin1.get(cc + "." + p[10], ""),
-                                 countries.get(cc, cc), pop, p[7] == "PPLX")
+                                 countries.get(cc, cc), pop, p[7] == "PPLX", cc, p[10], p[11])
                         grid[(int(math.floor(lat)), int(math.floor(lon)))].append(entry)
                         names.append(entry)
             self.grid = grid
@@ -720,6 +794,108 @@ class Geo:
             if e[4] != name:
                 parts.append(e[4])
         return ", ".join(parts)
+
+    # ---------- richer offline place info (for the Places page) ----------
+    def _extra_file(self, name):
+        for d in (self.dir, os.environ.get("PO_GEO_DIR") or "", os.path.join(app_dir(), "geo")):
+            if d and os.path.exists(os.path.join(d, name)):
+                return os.path.join(d, name)
+        return None
+
+    def _admin2(self):
+        if getattr(self, "_a2", None) is None:
+            a2 = {}
+            path = self._extra_file("admin2Codes.txt.gz") or self._extra_file("admin2Codes.txt")
+            if path:
+                opener = gzip.open if path.endswith(".gz") else open
+                with opener(path, "rt", encoding="utf-8") as f:
+                    for line in f:
+                        p = line.rstrip("\n").split("\t")
+                        if len(p) > 1:
+                            a2[p[0]] = p[1]
+            self._a2 = a2
+        return self._a2
+
+    def details(self, lat, lon):
+        """Country, state, county/region and nearest town for a point — all offline."""
+        self.load()
+        out = {"country": None, "state": None, "region": None, "city": None, "city_km": None}
+        e, d = self.nearest(lat, lon)
+        if e is None or d > 250:
+            return out
+        out["country"], out["state"] = e[4] or None, e[3] or None
+        if len(e) > 9 and e[9]:
+            out["region"] = self._admin2().get("%s.%s.%s" % (e[7], e[8], e[9]))
+        m, md = self.main_place(lat, lon, radius=25)
+        if m is None:
+            m, md = e, d
+        out["city"], out["city_km"] = m[2], round(md, 1)
+        return out
+
+    def _features(self):
+        """Lakes, islands, bays, mountains, parks, regions… (built from GeoNames) for offline search."""
+        if getattr(self, "_feat", None) is None:
+            feats = []
+            path = self._extra_file("features.tsv.gz")
+            if path:
+                with gzip.open(path, "rt", encoding="utf-8") as f:
+                    for line in f:
+                        p = line.rstrip("\n").split("\t")
+                        if len(p) < 9:
+                            continue
+                        try:
+                            lat, lon, pop = float(p[2]), float(p[3]), int(p[7] or 0)
+                        except ValueError:
+                            continue
+                        keys = {fold(p[0])} | {fold(x) for x in p[1].split("|") if x}
+                        feats.append((tuple(keys), p[0], lat, lon, p[4], p[5], p[6], pop, p[8]))
+            self._feat = feats
+        return self._feat
+
+    def search_all(self, q, limit=12):
+        """Offline search: towns and cities plus natural places and regions."""
+        self.load()
+        ql = fold(q)
+        if len(ql) < 2:
+            return []
+        hits = []
+
+        def rank(key):
+            if key == ql:
+                return 0
+            if key.startswith(ql):
+                return 1
+            if (" " + ql) in key:
+                return 2
+            return None
+        for f in self._features():
+            r = min((x for x in (rank(k) for k in f[0]) if x is not None), default=None)
+            if r is not None:
+                imp = f[7] + FEATURE_WEIGHT.get(f[4], 20000)
+                hits.append((r, -imp, {"name": f[1], "lat": f[2], "lon": f[3], "kind": FEATURE_KIND.get(f[4], "Place"),
+                                       "label": ", ".join(x for x in (f[1], f[5], f[6]) if x),
+                                       "zoom": FEATURE_ZOOM.get(f[4], 11)}))
+        if self.names is not None:
+            folded = getattr(self, "_names_folded", None)
+            if folded is None or len(folded) != len(self.names):
+                folded = self._names_folded = [fold(e[2]) for e in self.names]
+            for key, e in zip(folded, self.names):
+                r = rank(key)
+                if r is not None:
+                    hits.append((r, -e[5], {"name": e[2], "lat": e[0], "lon": e[1],
+                                            "kind": "Neighbourhood" if e[6] else "Town",
+                                            "label": ", ".join(x for x in (e[2], e[3], e[4]) if x),
+                                            "zoom": 13 if e[5] < 100000 else 11}))
+        hits.sort(key=lambda h: (h[0], h[1]))
+        out, seen = [], set()
+        for _, _, h in hits:
+            k = (h["name"].lower(), round(h["lat"], 1), round(h["lon"], 1))
+            if k not in seen:
+                seen.add(k)
+                out.append(h)
+            if len(out) >= limit:
+                break
+        return out
 
     def search_offline(self, q, limit=8):
         if self.names is None:
@@ -909,6 +1085,9 @@ CREATE TABLE IF NOT EXISTS faces(
 CREATE INDEX IF NOT EXISTS faces_file ON faces(file_id);
 CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id);
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, name TEXT UNIQUE COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS my_places(id INTEGER PRIMARY KEY, name TEXT, lat REAL, lon REAL,
+  precision TEXT DEFAULT 'exact', radius REAL, type TEXT, tags TEXT, notes TEXT, starred INTEGER DEFAULT 0,
+  country TEXT, state TEXT, region TEXT, city TEXT, cover_id INTEGER, created TEXT);
 """
 
 DEFAULT_SETTINGS = {"folders": "month_group", "time": "1", "highlights": "5", "faces": "off"}
@@ -953,7 +1132,8 @@ class Library:
                              ("filedates", "INTEGER DEFAULT 0"), ("city", "TEXT"),
                              ("rating", "INTEGER"), ("rating_pending", "INTEGER DEFAULT 0"),
                              ("scene", "TEXT"), ("faces_done", "INTEGER DEFAULT 0"), ("people", "TEXT"),
-                             ("pair_of", "INTEGER")):
+                             ("pair_of", "INTEGER"), ("gps_precision", "TEXT"), ("gps_radius", "REAL"),
+                             ("place_id", "INTEGER")):
                 if col not in cols:
                     self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
             self.db.commit()
@@ -2730,6 +2910,211 @@ class Library:
         self.invalidate()
         return {"updated": len(ids), "place": place}
 
+    # ---------- Places page: saved places, map points, batch geotagging ----------
+    def my_places(self):
+        rows = self.q("""SELECT p.*, (SELECT COUNT(*) FROM files f WHERE f.place_id=p.id AND f.status='active'
+                         AND f.pair_of IS NULL) AS photos FROM my_places p ORDER BY starred DESC, name COLLATE NOCASE""")
+        for r in rows:
+            r["tags"] = split_tags(r["tags"])
+        return rows
+
+    def save_place(self, d):
+        lat, lon = valid_coords(d.get("lat"), d.get("lon"))
+        name = re.sub(r"\s+", " ", (d.get("name") or "")).strip()
+        if lat is None:
+            raise ValueError("Drop a pin on the map first.")
+        if not name:
+            raise ValueError("Give the place a name, like Mom's Cabin.")
+        info = self.geo.details(lat, lon)
+        tags = d.get("tags") or []
+        if isinstance(tags, str):
+            tags = split_tags(tags)
+        vals = {"name": name, "lat": lat, "lon": lon, "precision": d.get("precision") or "exact",
+                "radius": d.get("radius"), "type": (d.get("type") or "").strip() or None,
+                "tags": ", ".join(tags) or None, "notes": (d.get("notes") or "").strip() or None,
+                "starred": 1 if d.get("starred") else 0, "country": info.get("country"), "state": info.get("state"),
+                "region": info.get("region"), "city": info.get("city"), "cover_id": d.get("cover_id")}
+        pid = d.get("id")
+        if pid:
+            self.x("UPDATE my_places SET %s WHERE id=?" % ", ".join("%s=?" % k for k in vals),
+                   list(vals.values()) + [int(pid)])
+            # photos filed under this place follow it if it moved
+            moved = self.q("SELECT id FROM files WHERE place_id=? AND (lat != ? OR lon != ?)", (int(pid), lat, lon))
+            if moved:
+                self.set_location([r["id"] for r in moved], lat, lon, name=name)
+        else:
+            vals["created"] = dt.datetime.now().isoformat(timespec="seconds")
+            with self.lock:
+                cur = self.db.execute("INSERT INTO my_places(%s) VALUES(%s)" % (", ".join(vals), ", ".join("?" * len(vals))),
+                                      list(vals.values()))
+                self.db.commit()
+                pid = cur.lastrowid
+        return next(p for p in self.my_places() if p["id"] == int(pid))
+
+    def delete_place(self, pid):
+        self.x("UPDATE files SET place_id=NULL WHERE place_id=?", (int(pid),))
+        self.x("DELETE FROM my_places WHERE id=?", (int(pid),))
+        return {"ok": True}
+
+    def place_points(self):
+        """Every photo with a location, for the map."""
+        return [[r["id"], round(r["lat"], 6), round(r["lon"], 6), r["gps_precision"] or "exact"] for r in self.q(
+            """SELECT id, lat, lon, gps_precision FROM files WHERE status='active' AND pair_of IS NULL
+               AND lat IS NOT NULL""")]
+
+    def places_photos(self, mode="none", ids=None, limit=3000):
+        """Photos for the filmstrip: those without a location (with suggestions), or a given set."""
+        if ids:
+            ids = [int(i) for i in ids][:limit]
+            rows = self.q("SELECT * FROM files WHERE id IN (%s) AND status='active' ORDER BY taken, path"
+                          % ",".join("?" * len(ids)), ids)
+        else:
+            rows = self.q("""SELECT * FROM files WHERE status='active' AND pair_of IS NULL AND lat IS NULL
+                             AND loc_skip=0 ORDER BY taken DESC, path LIMIT ?""", (limit,))
+        sug = {}
+        if not ids:
+            for d in self.location_days()["days"]:
+                for k, v in d["suggested"].items():
+                    sug[int(k)] = v
+        total = len(rows) if ids else self.q("""SELECT COUNT(*) AS n FROM files WHERE status='active'
+                AND pair_of IS NULL AND lat IS NULL AND loc_skip=0""")[0]["n"]
+        return {"total": total, "items": [{
+            "id": r["id"], "name": os.path.basename(r["path"]), "taken": r["taken"], "kind": r["kind"],
+            "thumb": r["thumb"], "lat": r["lat"], "lon": r["lon"], "place": r["place"],
+            "precision": r["gps_precision"] or ("exact" if r["lat"] is not None else None),
+            "needs_date": r["date_source"] in NEEDS_DATE, "suggest": sug.get(r["id"])} for r in rows]}
+
+    def geotag(self, job, ids, lat, lon, name=None, precision="exact", radius=None, place_id=None):
+        """Put one location on many photos and save it into the files (only the location changes)."""
+        ids = [int(i) for i in ids]
+        job.step("Setting the location", len(ids))
+        with self.batch():
+            self.set_location(ids, lat, lon, name=name or None)
+            prec = precision if precision in ("exact", "approx", "place") else "exact"
+            rad = float(radius) if radius and prec != "exact" else None
+            self.x("UPDATE files SET gps_precision=?, gps_radius=?, place_id=? WHERE id=?",
+                   [(prec, rad, int(place_id) if place_id else None, i) for i in ids + self.companions(ids)], many=True)
+            job.done = len(ids)
+            res = self.apply(job, ids, rename=False)
+        return {"geotagged": len(ids), "failed": res.get("failed", []), "failed_count": res.get("failed_count", 0)}
+
+    # ---------- offline map regions (kept on the drive with the photos) ----------
+    def maps_dir(self):
+        d = os.path.join(self.data, "maps")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def map_info(self):
+        world = None
+        for d in (os.environ.get("PO_MAP_DIR"), self.maps_dir(), os.path.join(app_dir(), "maps")):
+            if d and os.path.exists(os.path.join(d, "world.pmtiles")):
+                world = os.path.join(d, "world.pmtiles")
+                break
+        regions = []
+        try:
+            with open(os.path.join(self.maps_dir(), "regions.json"), encoding="utf-8") as f:
+                regions = json.load(f)
+        except Exception:
+            regions = []
+        regions = [r for r in regions if os.path.exists(os.path.join(self.maps_dir(), r["file"]))]
+        for r in regions:
+            r["size"] = os.path.getsize(os.path.join(self.maps_dir(), r["file"]))
+        return {"world": world, "regions": regions, "tool": bool(pmtiles_tool()), "presets": MAP_PRESETS}
+
+    def _save_regions(self, regions):
+        keep = [{k: r[k] for k in ("id", "name", "bbox", "maxzoom", "file", "build") if k in r} for r in regions]
+        with open(os.path.join(self.maps_dir(), "regions.json"), "w", encoding="utf-8") as f:
+            json.dump(keep, f, indent=1)
+
+    def map_estimate(self, bbox, maxzoom):
+        tool = pmtiles_tool()
+        if not tool:
+            raise RuntimeError("The map download tool isn't included in this copy of the app.")
+        url = latest_map_build()
+        r = subprocess.run([tool, "extract", url, os.path.join(self.maps_dir(), "estimate.pmtiles"),
+                            "--bbox=%s" % ",".join("%.5f" % x for x in bbox), "--maxzoom=%d" % int(maxzoom), "--dry-run"],
+                           capture_output=True, text=True, timeout=180)
+        text = r.stdout + r.stderr
+        m = re.findall(r"([\d.]+)\s*(B|kB|KB|MB|GB|TB)\b", text)
+        if not m:
+            return {"bytes": None, "note": text.strip()[-300:]}
+        num, unit = m[-1]
+        mult = {"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[unit]
+        return {"bytes": int(float(num) * mult)}
+
+    def map_download(self, job, name, bbox, maxzoom):
+        tool = pmtiles_tool()
+        if not tool:
+            raise RuntimeError("The map download tool isn't included in this copy of the app.")
+        job.step("Getting ready to download the %s map" % name)
+        url = latest_map_build()
+        try:
+            est = self.map_estimate(bbox, maxzoom).get("bytes")
+        except Exception:
+            est = None
+        rid = re.sub(r"[^a-z0-9]+", "-", fold(name)).strip("-") or "region"
+        info = self.map_info()
+        n, base = 2, rid
+        while any(r["id"] == rid for r in info["regions"]):
+            rid, n = "%s-%d" % (base, n), n + 1
+        final = os.path.join(self.maps_dir(), rid + ".pmtiles")
+        part = final + ".part"
+        job.step("Downloading the %s map" % name, est or 0)
+        proc = subprocess.Popen([tool, "extract", url, part, "--bbox=%s" % ",".join("%.5f" % x for x in bbox),
+                                 "--maxzoom=%d" % int(maxzoom), "--download-threads=4"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        tail = []
+
+        def reader():
+            for line in iter(proc.stdout.readline, b""):
+                tail.append(line.decode("utf-8", "replace"))
+                del tail[:-20]
+        threading.Thread(target=reader, daemon=True).start()
+        while proc.poll() is None:
+            time.sleep(1)
+            try:
+                size = os.path.getsize(part)
+            except OSError:
+                size = 0
+            job.done = min(size, est) if est else 0
+            job.message = "%s downloaded%s" % (fmt_bytes(size), (" of about " + fmt_bytes(est)) if est else "")
+            if getattr(job, "cancel", False):
+                proc.kill()
+        if proc.returncode != 0 or not os.path.exists(part):
+            try:
+                os.remove(part)
+            except OSError:
+                pass
+            raise RuntimeError("The map download didn't finish: " + "".join(tail)[-300:].strip())
+        os.replace(part, final)
+        regions = info["regions"] + [{"id": rid, "name": name, "bbox": bbox, "maxzoom": int(maxzoom),
+                                      "file": rid + ".pmtiles", "build": url.rsplit("/", 1)[-1]}]
+        self._save_regions(regions)
+        return {"map_region": name, "bytes": os.path.getsize(final)}
+
+    def map_delete(self, rid):
+        info = self.map_info()
+        keep = []
+        for r in info["regions"]:
+            if r["id"] == rid:
+                try:
+                    os.remove(os.path.join(self.maps_dir(), r["file"]))
+                except OSError:
+                    pass
+            else:
+                keep.append(r)
+        self._save_regions(keep)
+        return {"ok": True}
+
+    def map_file(self, name):
+        """Path of a map file the map view asks for (world or a downloaded region)."""
+        if name == "world":
+            return self.map_info()["world"]
+        for r in self.map_info()["regions"]:
+            if r["id"] == name:
+                return os.path.join(self.maps_dir(), r["file"])
+        return None
+
     def skip_location(self, ids, skip=True):
         self.x("UPDATE files SET loc_skip=? WHERE id=?", [(1 if skip else 0, int(i)) for i in ids], many=True)
         self.invalidate()
@@ -3348,6 +3733,18 @@ class Library:
                     args += ["-Keys:GPSCoordinates=" + coords, "-UserData:GPSCoordinates=" + coords]
                 else:
                     args += ["-GPSLatitude*=%.6f" % r["lat"], "-GPSLongitude*=%.6f" % r["lon"]]
+                    # how sure the spot is: 'about 500 m' for approximate or place-only locations
+                    radius = r.get("gps_radius") if r.get("gps_precision") in ("approx", "place") else None
+                    args += ["-GPSHPositioningError=%d" % radius] if radius else ["-GPSHPositioningError="]
+                    info = self.geo.details(r["lat"], r["lon"]) if self.geo.load() else {}
+                    named = None
+                    if r.get("place_id"):
+                        pl = self.q("SELECT name FROM my_places WHERE id=?", (r["place_id"],))
+                        named = pl[0]["name"] if pl else None
+                    for tag, val in (("XMP-photoshop:City", info.get("city")), ("XMP-photoshop:State", info.get("state")),
+                                     ("XMP-photoshop:Country", info.get("country")),
+                                     ("XMP-iptcCore:Location", named)):
+                        args.append("-%s=%s" % (tag, val or ""))
             if c["date"]:
                 stamp = r["taken"].replace("-", ":").replace("T", " ")
                 if r["kind"] == "video":

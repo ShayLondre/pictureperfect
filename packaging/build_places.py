@@ -12,7 +12,10 @@ import zipfile
 all_zip, alt_zip, admin1_txt, country_txt, out = sys.argv[1:6]
 
 KEEP_CLASSES = set("HLTSVA")
-SKIP_CODES = {"ADM3", "ADM4", "ADM5", "ADMD", "ADM1H", "ADM2H", "ADM3H", "ADM4H", "PCLH",
+# for sailors and travellers: every one of these, even without a Wikipedia page
+ALWAYS = {"ISL", "ISLS", "ISLET", "ATOL", "ANCH", "BAY", "BAYS", "COVE", "HBR", "MAR", "BCH", "BCHS", "LGN", "RF",
+          "CAPE", "PT", "PEN", "STRT", "CHN", "SD", "INLT", "LK"}
+SKIP_CODES = {"SCH", "SCHC", "SCHT", "TOWR", "RSTN", "RSTP", "HSP", "HSPC", "PO", "BUSTN", "MTRO", "RDJCT","ADM3", "ADM4", "ADM5", "ADMD", "ADM1H", "ADM2H", "ADM3H", "ADM4H", "PCLH",
               "STMI", "WLL", "WLLS", "SPNG", "RSV", "CNL", "DTCH", "DTCHI", "BLDG", "HSE", "FRM", "CMTY"}
 
 wiki = set()
@@ -24,10 +27,14 @@ with zipfile.ZipFile(alt_zip) as z:
             p = line.rstrip("\n").split("\t")
             if len(p) < 4:
                 continue
-            if p[2] == "link" and "en.wikipedia.org" in p[3]:
+            if p[2] == "link" and "wikipedia.org" in p[3]:
                 wiki.add(p[1])
-            elif p[2] == "en" and (len(p) < 5 or p[4] == "1") and p[1] not in english:
-                english[p[1]] = p[3]
+            elif p[2] == "en" and not (len(p) > 7 and p[7] == "1"):   # English names, not historic ones
+                names = english.setdefault(p[1], [])
+                if len(p) > 4 and p[4] == "1":
+                    names.insert(0, p[3])
+                elif len(names) < 4:
+                    names.append(p[3])
 print("wikipedia-linked places:", len(wiki))
 
 admin1 = {}
@@ -52,10 +59,15 @@ with zipfile.ZipFile(all_zip) as z, gzip.open(out, "wt", encoding="utf-8", compr
             if len(p) < 17 or p[6] not in KEEP_CLASSES or p[7] in SKIP_CODES:
                 continue
             gid = p[0]
-            if gid not in wiki and not (p[6] == "A" and p[7] in ("ADM1", "PCLI", "PCLD", "TERR")):
+            if gid not in wiki and p[7] not in ALWAYS and not (p[6] == "A" and p[7] in ("ADM1", "PCLI", "PCLD", "TERR")):
                 continue
-            nm = english.get(gid) or p[1]
-            alt = p[2] if p[2] != nm else ""
+            en = english.get(gid) or []
+            nm = en[0] if en else p[1]
+            alts = []
+            for a in [p[1], p[2]] + en:
+                if a and a != nm and a not in alts:
+                    alts.append(a)
+            alt = "|".join(alts[:5])
             try:
                 lat, lon = round(float(p[4]), 5), round(float(p[5]), 5)
             except ValueError:

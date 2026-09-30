@@ -7,7 +7,7 @@ on:
     inputs:
       world_maxzoom:
         description: "How detailed the built-in world map is (5 = countries & big cities)"
-        default: "5"
+        default: "6"
 
 permissions:
   contents: write

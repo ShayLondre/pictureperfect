@@ -3963,6 +3963,33 @@ class Library:
             "highlights": len(self.highlight_rows()),
         }
 
+    def _place_tags(self, r, legacy_iptc=False):
+        """The place-name tags saved into a photo alongside its coordinates, as (tag, value):
+        the place you chose (e.g. Tobago Cays, or one of My Places), and its city, state and country.
+        With r=None, just the tag names (for taking a location off)."""
+        names = {"place": None, "city": None, "state": None, "country": None}
+        if r is not None:
+            info = self.geo.details(r["lat"], r["lon"]) if self.geo.load() else {}
+            named = None
+            if r.get("place_id"):
+                pl = self.q("SELECT name FROM my_places WHERE id=?", (r["place_id"],))
+                named = pl[0]["name"] if pl else None
+            label = (r.get("place") or "").strip()
+            if not named and label and not label.startswith(("At sea", "Near ")):
+                named = label.split(",")[0].strip()
+            city = r.get("city")
+            if not city or city == "At sea" or city.startswith("Near "):
+                city = info.get("city")
+            names = {"place": named, "city": city, "state": info.get("state"), "country": info.get("country")}
+            if names["place"] and names["city"] and names["place"].lower() == names["city"].lower():
+                names["place"] = None   # "Gustavia" in Gustavia: the city says it already
+        tags = [("XMP-iptcCore:Location", names["place"]), ("XMP-photoshop:City", names["city"]),
+                ("XMP-photoshop:State", names["state"]), ("XMP-photoshop:Country", names["country"])]
+        if legacy_iptc:   # older apps and Windows tools read these
+            tags += [("IPTC:Sub-location", names["place"]), ("IPTC:City", names["city"]),
+                     ("IPTC:Province-State", names["state"]), ("IPTC:Country-PrimaryLocationName", names["country"])]
+        return tags
+
     def apply(self, job, ids=None, rename=True):
         with self.batch():
             return self._apply(job, ids, rename)
@@ -3979,9 +4006,10 @@ class Library:
         for c in writes:
             r = self.get(c["id"])
             args = []
+            is_jpeg_tiff = os.path.splitext(r["path"])[1].lower() in (".jpg", ".jpeg", ".tif", ".tiff")
             if c["gps"] and r["lat"] is None:   # location taken off
-                args += ["-GPS:all=", "-XMP-exif:GPSLatitude=", "-XMP-exif:GPSLongitude=", "-XMP-photoshop:City=",
-                         "-XMP-photoshop:State=", "-XMP-photoshop:Country=", "-XMP-iptcCore:Location="]
+                args += ["-GPS:all=", "-XMP-exif:GPSLatitude=", "-XMP-exif:GPSLongitude="]
+                args += ["-%s=" % tag for tag, _ in self._place_tags(None, is_jpeg_tiff)]
                 if r["kind"] == "video":
                     args += ["-Keys:GPSCoordinates=", "-UserData:GPSCoordinates="]
             if c["gps"] and r["lat"] is not None:
@@ -3993,15 +4021,12 @@ class Library:
                     # how sure the spot is: 'about 500 m' for approximate or place-only locations
                     radius = r.get("gps_radius") if r.get("gps_precision") in ("approx", "place") else None
                     args += ["-GPSHPositioningError=%d" % radius] if radius else ["-GPSHPositioningError="]
-                    info = self.geo.details(r["lat"], r["lon"]) if self.geo.load() else {}
-                    named = None
-                    if r.get("place_id"):
-                        pl = self.q("SELECT name FROM my_places WHERE id=?", (r["place_id"],))
-                        named = pl[0]["name"] if pl else None
-                    for tag, val in (("XMP-photoshop:City", info.get("city")), ("XMP-photoshop:State", info.get("state")),
-                                     ("XMP-photoshop:Country", info.get("country")),
-                                     ("XMP-iptcCore:Location", named)):
-                        args.append("-%s=%s" % (tag, val or ""))
+            # the place's name goes in with its coordinates: when a location is set, and the first time
+            # the app saves a photo that came with its own GPS (its exact spot is never rewritten)
+            if r["lat"] is not None and (c["gps"] or c["filedates"]):
+                if is_jpeg_tiff and "-codedcharacterset=utf8" not in args:
+                    args += ["-codedcharacterset=utf8"]
+                args += ["-%s=%s" % (tag, val or "") for tag, val in self._place_tags(r, is_jpeg_tiff)]
             if c["date"]:
                 stamp = r["taken"].replace("-", ":").replace("T", " ")
                 if r["kind"] == "video":
@@ -4015,8 +4040,9 @@ class Library:
                 tags += [p for p in people if p.lower() not in [t.lower() for t in tags]]
                 args += ["-XMP-dc:Subject=" + t for t in tags] or ["-XMP-dc:Subject="]
                 args += ["-XMP-iptcExt:PersonInImage=" + p for p in people] or ["-XMP-iptcExt:PersonInImage="]
-                if os.path.splitext(r["path"])[1].lower() in (".jpg", ".jpeg", ".tif", ".tiff"):
-                    args += ["-codedcharacterset=utf8"]
+                if is_jpeg_tiff:
+                    if "-codedcharacterset=utf8" not in args:
+                        args += ["-codedcharacterset=utf8"]
                     args += ["-IPTC:Keywords=" + t for t in tags] or ["-IPTC:Keywords="]
             if c["rating"]:
                 args += ["-XMP-xmp:Rating=%d" % r["rating"] if r["rating"] else "-XMP-xmp:Rating="]

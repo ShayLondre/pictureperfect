@@ -105,6 +105,8 @@ function summarize(job) {
   if (r.highlights_added) bits.push(`${plural(r.highlights_added, "photo")} added to highlights`);
   if (r.highlights_removed) bits.push(`${plural(r.highlights_removed, "photo")} taken out of highlights`);
   if (r.faces !== undefined) bits.push(`${plural(r.faces, "face")} found so far — see the People tab`);
+  if (r.geotagged !== undefined) bits.push(`Location saved into ${plural(r.geotagged, "photo")}` + (r.failed_count ? ` · ${n(r.failed_count)} couldn't be changed` : ""));
+  if (r.map_region) bits.push(`${r.map_region} map downloaded (${fmtSize(r.bytes)}) — it works offline now`);
   if (r.tidied !== undefined) bits.push(`${plural(r.tidied, "photo")} tidied up`);
   if (r.picked !== undefined) {
     bits.push(`${n(r.picked)} kept`, `${n(r.trashed)} moved to the Trash`);
@@ -128,6 +130,11 @@ async function poll() {
       if (job.error && (IM.state === "checking" || IM.state === "running")) importScreen(IM.state === "running" ? "pick" : "start");
       if (res.import_check && !job.error) showImport();
       else if (res.imported_ids !== undefined && !job.error) showImportReview(res);
+      else if ((res.geotagged !== undefined || res.map_region) && !job.error) {
+        if (res.map_region) plReloadMap();
+        if (res.geotagged !== undefined) { PL.sel.clear(); }
+        if (S.tab === "locations") loadPlaces();
+      }
       else if (res.tidied !== undefined && !job.error) { tuReset(); if (S.tab === "organize") loadTidy(); loadAlbums(); }
       else if (res.inbox_new && !job.error) showTab("inbox");   // new photos found on the drive
       else if (S.tab === "inbox" && R.mode !== "inbox") showTab("inbox", true);
@@ -884,7 +891,7 @@ function showTab(tab, soft) {
   if (tab === "dupes") loadDupes();
   if (tab === "pick" && !soft) loadPickGroups();
   if (tab === "people") { if (!soft) PP.detail = null; PP.detail ? openDetail(PP.detail) : loadPeople(); }
-  if (tab === "locations") loadLocations(true);
+  if (tab === "locations") loadPlaces();
   if (tab === "organize") loadTidy();
 }
 
@@ -1220,71 +1227,537 @@ $("#btn-restore").onclick = () => {
   api("/api/dupes/restore", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
 };
 
-/* ------------------------------------------------------------------ locations */
-const L = { days: [], offset: 0, total: 0 };
+/* ------------------------------------------------------------------ Places: offline map + geotagging */
+const PL = { map: null, mapReady: false, src: "none", photos: [], total: 0, sel: new Set(), last: null, shown: 240,
+  pin: null, pinMarker: null, info: null, placeId: null, prec: "exact", tags: [], starred: false, mine: [],
+  points: [], show: "photos", ids: [], thumbs: new Map(), mineMarkers: [], sugg: null };
 
-async function loadLocations(reset) {
-  if (reset) { L.days = []; L.offset = 0; }
-  let r;
-  try { r = await api("/api/locations?offset=" + L.offset); } catch (e) { return fail(e); }
-  L.days = L.days.concat(r.days);
-  L.offset = L.days.length;
-  L.daysTotal = r.days_total;
-  $("#loc-sub").textContent = r.total
-    ? `${plural(r.total, "photo")} without a location${r.covered ? ` — ${n(r.covered)} can be filled in from nearby photos` : ""}`
-    : "";
-  $("#btn-accept-all").hidden = !r.covered;
-  $("#btn-accept-all").textContent = `Use all ${n(r.covered)} suggestions`;
-  $("#loc-empty").hidden = r.total > 0;
-  $("#loc-more").hidden = L.days.length >= r.days_total;
-  renderLocations();
+function loadScript(src) {
+  return new Promise((ok) => {
+    const sc = document.createElement("script"); sc.src = src; sc.async = false;
+    sc.onload = () => ok(true); sc.onerror = () => ok(false);
+    document.head.appendChild(sc);
+  });
+}
+async function loadMapLibs() {
+  if (window.maplibregl && window.pmtiles && window.basemaps) return true;
+  if (!loadMapLibs.p) {
+    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "/static/vendor/map/maplibre-gl.css";
+    document.head.appendChild(css);
+    loadMapLibs.p = Promise.all(["maplibre-gl.js", "pmtiles.js", "basemaps.js"].map(f => loadScript("/static/vendor/map/" + f)))
+      .then(r => r.every(Boolean) && !!window.maplibregl);
+  }
+  return loadMapLibs.p;
 }
 
-function renderLocations() {
-  $("#loc-list").innerHTML = L.days.map((d, i) => {
-    const shown = d.ids.slice(0, 10);
-    const extra = d.ids.length - shown.length;
-    const sug = d.covered
-      ? `<span><span class="dot"></span>Suggested:</span> <span class="place">${esc(d.place || "")}</span>
-         <span class="muted small">${esc(d.why || "")}${d.covered < d.count ? ` · covers ${n(d.covered)} of ${n(d.count)}` : ""}</span>`
-      : `<span class="muted"><span class="dot none"></span>No nearby photos with a location — choose one.</span>`;
-    return `<div class="card" data-i="${i}">
-      <div class="card-head"><h3>${fmtDay(d.date)}</h3><span class="muted">${plural(d.count, "photo")}${d.guessed_dates ? ` · ${n(d.guessed_dates)} with guessed dates` : ""}</span></div>
-      <div class="suggest">${sug}</div>
-      <div class="strip">${shown.map(id => `<img loading="lazy" src="/thumb/${id}" alt="">`).join("")}${extra > 0 ? `<div class="plus">+${n(extra)}</div>` : ""}</div>
-      <div class="card-actions">
-        ${d.covered ? `<button class="primary" data-act="accept">Use suggestion</button>` : ""}
-        <button class="${d.covered ? "ghost" : "primary"}" data-act="choose">Choose place…</button>
-        <span class="spacer"></span>
-        <button class="link" data-act="skip">Leave without location</button>
-      </div>
-    </div>`;
-  }).join("");
+function mapStyle(info) {
+  const origin = location.origin;
+  const flavor = basemaps.namedFlavor("light");
+  const style = { version: 8, glyphs: origin + "/static/vendor/map/fonts/{fontstack}/{range}.pbf",
+    sprite: origin + "/static/vendor/map/sprites/light", sources: {}, layers: [] };
+  const maps = [];
+  if (info.world) maps.push({ key: "world", name: "world" });
+  (info.regions || []).forEach(r => maps.push({ key: "r_" + r.id.replace(/[^a-z0-9]/gi, "_"), name: r.id }));
+  maps.forEach((m, i) => {
+    style.sources[m.key] = { type: "vector", url: `pmtiles://${origin}/maps/${m.name}.pmtiles`,
+      attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap</a> · Protomaps' };
+    basemaps.layers(m.key, flavor, { lang: "en" }).forEach(l => {
+      if (l.type === "background" && i > 0) return;   // one background for the whole map
+      style.layers.push(Object.assign({}, l, { id: m.key + ":" + l.id }));
+    });
+  });
+  if (!maps.length) style.layers.push({ id: "bg", type: "background", paint: { "background-color": "#e9eef0" } });
+  return style;
 }
 
-$("#loc-list").onclick = async (e) => {
-  const act = e.target.closest("[data-act]"); if (!act) return;
-  const d = L.days[+act.closest(".card").dataset.i];
-  try {
-    if (act.dataset.act === "accept") {
-      const r = await api("/api/locations/accept", { ids: d.ids });
-      toast(`Location added to ${plural(r.updated, "photo")}.`);
-    } else if (act.dataset.act === "skip") {
-      await api("/api/locations/skip", { ids: d.ids });
-    } else {
-      return openPicker(d.ids, `Place for ${fmtDay(d.date)} · ${plural(d.count, "photo")}`, () => { refreshState(); loadLocations(true); }, d.place);
+async function initMap() {
+  if (PL.map) return true;
+  const ok = await loadMapLibs();
+  let info = {};
+  try { info = await api("/api/map/info"); } catch (e) { /* ignore */ }
+  PL.mapInfo = info;
+  if (!ok) {
+    $("#pl-nomap").hidden = false;
+    $("#pl-nomap").innerHTML = `<div><b>The map isn't included in this copy of the app.</b><br>Search, My Places and typing coordinates still work.</div>`;
+    return false;
+  }
+  if (!PL.protocol) { PL.protocol = new pmtiles.Protocol(); maplibregl.addProtocol("pmtiles", PL.protocol.tile); }
+  const map = PL.map = new maplibregl.Map({ container: "pl-map", style: mapStyle(info), center: [-61.7, 13.5], zoom: 3,
+    attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false });
+  map.touchZoomRotate.disableRotation();
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+  map.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
+  map.on("load", () => { PL.mapReady = true; addPhotoLayers(); renderPoints(); renderMine(); plShowPin(); });
+  map.on("mousemove", (e) => { $("#pl-coords").textContent = fmtLatLon(e.lngLat.lat, e.lngLat.lng); });
+  map.on("mouseout", () => { $("#pl-coords").textContent = ""; });
+  map.on("click", (e) => {
+    if (PL.show === "photos" && map.getLayer("pl-clusters")) {
+      const hit = map.queryRenderedFeatures(e.point, { layers: ["pl-clusters", "pl-dots"] });
+      if (hit.length) return plClickPhotos(hit[0]);
     }
-    refreshState(); loadLocations(true);
-  } catch (e2) { fail(e2); }
-};
-$("#loc-more").onclick = () => loadLocations(false);
-$("#btn-accept-all").onclick = async () => {
+    plSetPin(e.lngLat.lat, e.lngLat.lng, { prec: "exact" });
+  });
+  map.on("moveend", plThumbs);
+  map.on("mouseenter", "pl-clusters", () => (map.getCanvas().style.cursor = "pointer"));
+  map.on("mouseleave", "pl-clusters", () => (map.getCanvas().style.cursor = ""));
+  if (!info.world && !(info.regions || []).length) {
+    $("#pl-nomap").hidden = false;
+    $("#pl-nomap").innerHTML = `<div><b>No map downloaded yet.</b><br>Use Offline Maps to add one. Search and coordinates still work.</div>`;
+  }
+  return true;
+}
+
+function addPhotoLayers() {
+  const map = PL.map;
+  map.addSource("pl-photos", { type: "geojson", data: { type: "FeatureCollection", features: [] }, cluster: true, clusterRadius: 48, clusterMaxZoom: 16 });
+  map.addLayer({ id: "pl-clusters", type: "circle", source: "pl-photos", filter: ["has", "point_count"],
+    paint: { "circle-color": "#1f6f6a", "circle-opacity": 0.88, "circle-stroke-color": "#fff", "circle-stroke-width": 2,
+      "circle-radius": ["step", ["get", "point_count"], 14, 20, 18, 200, 23, 1000, 28] } });
+  map.addLayer({ id: "pl-count", type: "symbol", source: "pl-photos", filter: ["has", "point_count"],
+    layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Noto Sans Medium"], "text-size": 12, "text-allow-overlap": true },
+    paint: { "text-color": "#fff" } });
+  map.addLayer({ id: "pl-dots", type: "circle", source: "pl-photos", filter: ["!", ["has", "point_count"]],
+    paint: { "circle-radius": 6, "circle-color": ["case", ["==", ["get", "p"], "exact"], "#1f6f6a", "#ffffff"],
+      "circle-stroke-color": "#1f6f6a", "circle-stroke-width": 2 } });
+  map.addSource("pl-radius", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({ id: "pl-radius", type: "fill", source: "pl-radius", paint: { "fill-color": "#e0533d", "fill-opacity": 0.12 } });
+  map.addLayer({ id: "pl-radius-line", type: "line", source: "pl-radius", paint: { "line-color": "#e0533d", "line-width": 1.5, "line-dasharray": [2, 2] } });
+}
+
+function renderPoints() {
+  if (!PL.mapReady) return;
+  const vis = PL.show === "photos" ? "visible" : "none";
+  ["pl-clusters", "pl-count", "pl-dots"].forEach(id => PL.map.setLayoutProperty(id, "visibility", vis));
+  PL.map.getSource("pl-photos").setData({ type: "FeatureCollection", features: PL.points.map(p => ({
+    type: "Feature", geometry: { type: "Point", coordinates: [p[2], p[1]] }, properties: { id: p[0], p: p[3] } })) });
+  setTimeout(plThumbs, 300);
+}
+
+// close up, single photos show as little thumbnails at their spot
+function plThumbs() {
+  if (!PL.mapReady) return;
+  const map = PL.map, want = new Map();
+  if (PL.show === "photos" && map.getZoom() >= 11) {
+    for (const f of map.queryRenderedFeatures({ layers: ["pl-dots"] })) {
+      if (want.size >= 150) break;
+      want.set(f.properties.id, f);
+    }
+  }
+  for (const [id, m] of PL.thumbs) if (!want.has(id)) { m.remove(); PL.thumbs.delete(id); }
+  for (const [id, f] of want) {
+    if (PL.thumbs.has(id)) continue;
+    const el = document.createElement("div");
+    el.className = "pl-thumb" + (f.properties.p !== "exact" ? " approx" : "");
+    el.style.backgroundImage = `url(/thumb/${id})`;
+    el.title = "Click to see the photos here";
+    el.onclick = (ev) => { ev.stopPropagation(); plShowSource("here", [id]); };
+    PL.thumbs.set(id, new maplibregl.Marker({ element: el }).setLngLat(f.geometry.coordinates).addTo(map));
+  }
+}
+
+async function plClickPhotos(f) {
+  if (f.properties.cluster) {
+    const src = PL.map.getSource("pl-photos");
+    const leaves = await src.getClusterLeaves(f.properties.cluster_id, 5000, 0);
+    plShowSource("here", leaves.map(l => l.properties.id));
+    const z = await src.getClusterExpansionZoom(f.properties.cluster_id);
+    PL.map.easeTo({ center: f.geometry.coordinates, zoom: z });
+  } else plShowSource("here", [f.properties.id]);
+}
+
+function renderMine() {
+  PL.mineMarkers.forEach(m => m.remove()); PL.mineMarkers = [];
+  if (!PL.mapReady) return;
+  for (const p of PL.mine) {
+    const el = document.createElement("div");
+    el.className = "pl-mine";
+    el.innerHTML = `<i>${p.starred ? "★" : "◆"}</i>${esc(p.name)}`;
+    el.onclick = (ev) => { ev.stopPropagation(); plUseMine(p, true); };
+    PL.mineMarkers.push(new maplibregl.Marker({ element: el, anchor: "left", offset: [-10, 0] }).setLngLat([p.lon, p.lat]).addTo(PL.map));
+  }
+}
+
+function fmtLatLon(lat, lon) {
+  return `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? "N" : "S"}, ${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? "E" : "W"}`;
+}
+
+async function loadPlaces() {
+  const [mine, pts] = await Promise.all([api("/api/places/mine").catch(() => []), api("/api/places/points").catch(() => [])]);
+  PL.mine = mine; PL.points = pts;
+  await plLoadPhotos();
+  await initMap();
+  if (PL.map) { PL.map.resize(); renderPoints(); renderMine(); }
+  renderInsp();
+}
+
+async function plLoadPhotos() {
+  let r;
   try {
-    const r = await api("/api/locations/accept", {});
-    toast(`Location added to ${plural(r.updated, "photo")}.`);
-    refreshState(); loadLocations(true);
+    r = PL.src === "none" ? await api("/api/places/photos") : await api("/api/places/photos", { ids: PL.ids });
+  } catch (e) { return fail(e); }
+  PL.photos = r.items; PL.total = r.total;
+  const have = new Set(PL.photos.map(p => p.id));
+  PL.sel = new Set([...PL.sel].filter(id => have.has(id)));
+  renderFilm();
+}
+
+function plShowSource(src, ids) {
+  PL.src = src;
+  if (ids) PL.ids = ids;
+  $$("#pl-src button").forEach(b => { b.classList.toggle("on", b.dataset.v === src); if (b.dataset.v === src) b.hidden = false; });
+  PL.sel = new Set(src === "none" ? [] : PL.ids);
+  PL.shown = 240;
+  plLoadPhotos().then(() => { renderInsp(); if (src !== "none") plFit(); });
+}
+
+// open Places with particular photos chosen, e.g. from Tidy Up
+function openPlaces(ids) {
+  showTab("locations");
+  plShowSource("ids", ids);
+}
+
+function renderFilm() {
+  const list = PL.photos.slice(0, PL.shown);
+  let html = "", day = null;
+  list.forEach((p, i) => {
+    const d = p.taken ? p.taken.slice(0, 10) : "";
+    if (d !== day) { day = d; html += `<div class="day">${d ? fmtDay(d) : "No date"}</div>`; }
+    const tag = p.lat != null ? `<span class="tag">${esc(shortPlace(p.place || "") || "Has a location")}${p.precision && p.precision !== "exact" ? " (approx.)" : ""}</span>`
+      : p.suggest ? `<span class="tag sug" title="Suggested from ${esc(p.suggest.why)}">≈ ${esc(shortPlace(p.suggest.place || ""))}</span>` : "";
+    html += `<div class="pl-ph ${PL.sel.has(p.id) ? "on" : ""}" data-i="${i}" data-id="${p.id}" title="${esc(p.name)}">
+      <img loading="lazy" src="/thumb/${p.id}" alt=""><span class="ck"></span>${p.kind === "video" ? `<span class="vid">▶</span>` : ""}${tag}</div>`;
+  });
+  if (PL.photos.length > PL.shown) html += `<button class="ghost more" id="pl-more">Show ${n(Math.min(240, PL.photos.length - PL.shown))} more</button>`;
+  if (!PL.photos.length) html = `<div class="empty2">${PL.src === "none" ? "✓ Every photo has a location. Click a group of photos on the map to change theirs." : "No photos here."}</div>`;
+  $("#pl-film").innerHTML = html;
+  plSelChanged();
+}
+
+function plSelChanged() {
+  const k = PL.sel.size;
+  $("#pl-count").textContent = PL.src === "none"
+    ? `${n(k)} of ${plural(PL.total, "photo")} selected${PL.total > PL.photos.length ? ` (showing ${n(PL.photos.length)} newest)` : ""}`
+    : `${n(k)} of ${plural(PL.photos.length, "photo")} selected`;
+  $("#pl-apply").textContent = `Apply to ${plural(k, "Photo", "Photos")}`;
+  $("#pl-apply").disabled = !k || !PL.pin;
+  // suggestions from photos taken nearby in time
+  const sug = PL.photos.filter(p => PL.sel.has(p.id) && p.suggest);
+  const box = $("#pl-sugg");
+  if (sug.length) {
+    const top = Object.entries(sug.reduce((a, p) => ((a[p.suggest.place] = (a[p.suggest.place] || 0) + 1), a), {})).sort((a, b) => b[1] - a[1])[0][0];
+    box.hidden = false;
+    box.innerHTML = `<b>${plural(sug.length, "selected photo")}</b> ${sug.length === 1 ? "was" : "were"} taken close in time to photos at <b>${esc(shortPlace(top))}</b>${sug.length > 1 ? " and nearby places" : ""}.<br>
+      <button class="link" id="pl-use-sugg">Use those locations</button>`;
+  } else box.hidden = true;
+  if (!PL.pin) { $("#pl-insp-empty").hidden = false; $("#pl-form").hidden = true; $("#pl-insp-empty").appendChild(box); }
+  else $("#pl-form").appendChild(box);
+}
+
+$("#pl-film").onclick = (e) => {
+  if (e.target.id === "pl-more") { PL.shown += 240; return renderFilm(); }
+  const el = e.target.closest(".pl-ph"); if (!el) return;
+  const i = +el.dataset.i, id = +el.dataset.id;
+  if (e.shiftKey && PL.last != null) {
+    const [a, b] = [Math.min(PL.last, i), Math.max(PL.last, i)];
+    const on = !PL.sel.has(id) || true;
+    for (let j = a; j <= b; j++) on ? PL.sel.add(PL.photos[j].id) : PL.sel.delete(PL.photos[j].id);
+    renderFilm();
+  } else {
+    PL.sel.has(id) ? PL.sel.delete(id) : PL.sel.add(id);
+    el.classList.toggle("on", PL.sel.has(id));
+    plSelChanged();
+  }
+  PL.last = i;
+};
+$("#pl-film").ondblclick = (e) => {
+  const el = e.target.closest(".pl-ph"); if (!el) return;
+  openViewer(PL.photos, +el.dataset.i);
+};
+$("#pl-film").addEventListener("wheel", (e) => {   // a mouse wheel scrolls the filmstrip sideways
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { $("#pl-film").scrollLeft += e.deltaY; e.preventDefault(); }
+}, { passive: false });
+$("#pl-all").onclick = () => { PL.photos.forEach(p => PL.sel.add(p.id)); renderFilm(); };
+$("#pl-none").onclick = () => { PL.sel.clear(); renderFilm(); };
+$("#pl-src").onclick = (e) => { const b = e.target.closest("button"); if (b) plShowSource(b.dataset.v); };
+$("#pl-show").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  PL.show = b.dataset.v;
+  $$("#pl-show button").forEach(x => x.classList.toggle("on", x === b));
+  renderPoints(); renderInsp();
+};
+
+/* the pin and the inspector */
+async function plSetPin(lat, lon, opts = {}) {
+  PL.pin = { lat, lon };
+  if (opts.prec) plSetPrec(opts.prec);
+  if (opts.radius) $("#pl-radius").value = String(opts.radius);
+  if (opts.name !== undefined) $("#pl-name").value = opts.name;
+  if (!opts.keepPlace) { PL.placeId = null; $("#pl-del-place").hidden = true; }
+  plShowPin();
+  renderInsp();
+  try { PL.info = await api(`/api/places/details?lat=${lat}&lon=${lon}`); } catch (e) { PL.info = null; }
+  renderInsp();
+}
+
+function plShowPin() {
+  if (!PL.mapReady) return;
+  if (!PL.pin) { if (PL.pinMarker) { PL.pinMarker.remove(); PL.pinMarker = null; } plRadius(); return; }
+  if (!PL.pinMarker) {
+    const el = document.createElement("div");
+    el.className = "pl-pin";
+    el.innerHTML = `<svg viewBox="0 0 30 40"><path d="M15 39s12-13.2 12-23A12 12 0 0 0 3 16c0 9.8 12 23 12 23z" fill="#e0533d" stroke="#fff" stroke-width="2"/><circle cx="15" cy="16" r="4.5" fill="#fff"/></svg><span class="pl-pin-label" hidden></span>`;
+    PL.pinMarker = new maplibregl.Marker({ element: el, draggable: true, anchor: "bottom" }).setLngLat([PL.pin.lon, PL.pin.lat]).addTo(PL.map);
+    PL.pinMarker.on("dragend", () => { const ll = PL.pinMarker.getLngLat(); plSetPin(ll.lat, ll.lng, { keepPlace: false }); });
+  }
+  PL.pinMarker.setLngLat([PL.pin.lon, PL.pin.lat]);
+  const label = PL.pinMarker.getElement().querySelector(".pl-pin-label");
+  label.textContent = $("#pl-name").value.trim(); label.hidden = !label.textContent;
+  plRadius();
+}
+
+function plRadius() {
+  if (!PL.mapReady) return;
+  const src = PL.map.getSource("pl-radius"); if (!src) return;
+  if (!PL.pin || PL.prec === "exact") return src.setData({ type: "FeatureCollection", features: [] });
+  const r = +$("#pl-radius").value, pts = [];
+  for (let k = 0; k <= 64; k++) {
+    const a = (k / 64) * 2 * Math.PI;
+    const dLat = (r / 111320) * Math.sin(a), dLon = (r / (111320 * Math.cos(PL.pin.lat * Math.PI / 180))) * Math.cos(a);
+    pts.push([PL.pin.lon + dLon, PL.pin.lat + dLat]);
+  }
+  src.setData({ type: "Feature", geometry: { type: "Polygon", coordinates: [pts] } });
+}
+
+function plSetPrec(v) {
+  PL.prec = v;
+  $$("#pl-prec button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  $("#pl-radius-row").hidden = v === "exact";
+  if (v === "place" && +$("#pl-radius").value < 2000) $("#pl-radius").value = "10000";
+  plRadius();
+}
+
+function renderInsp() {
+  const has = !!PL.pin;
+  $("#pl-form").hidden = !has;
+  $("#pl-insp-empty").hidden = has;
+  if (!has) {
+    $("#pl-form").appendChild($("#pl-sugg"));   // keep the suggestion box safe while the empty panel is redrawn
+    const list = PL.mine.length && PL.show === "places"
+      ? `<div class="pl-minelist">${PL.mine.map(p => `<button class="ghost" data-mine="${p.id}">${p.starred ? "★ " : ""}${esc(p.name)}<span class="muted small"> · ${plural(p.photos, "photo")}</span></button>`).join("")}</div>` : "";
+    $("#pl-insp-empty").innerHTML = `<div class="pl-empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg></div>
+      <b>${PL.show === "places" ? "My Places" : "Choose a location"}</b>
+      <p>${PL.show === "places" ? (PL.mine.length ? "Click one to use it, or click the map to add a new one." : "Places you save — like Mom's Cabin — show up here and in search.")
+        : "Select photos below, then search for a place, pick one of My Places, or click the map to drop a pin. Drag the pin to fine-tune it."}</p>${list}`;
+    return plSelChanged();
+  }
+  const i = PL.info || {};
+  $("#pl-addr").innerHTML = [i.city && (i.city_km > 3 ? "Near " + i.city : i.city), [i.region, i.state].filter(Boolean).join(", "), i.country]
+    .filter(Boolean).map(esc).join("<br>") || (PL.info ? "Out at sea" : "…");
+  $("#pl-ll").textContent = fmtLatLon(PL.pin.lat, PL.pin.lon);
+  const rows = [["Country", i.country], ["State", i.state], ["Region", i.region], ["Nearest City", i.city ? `${i.city}${i.city_km != null ? ` (${i.city_km} km)` : ""}` : null],
+    ["Accuracy", { exact: "Exact spot", approx: `Within about ${$("#pl-radius").selectedOptions[0].text}`, place: "Somewhere in this area" }[PL.prec]]];
+  $("#pl-dl").innerHTML = rows.filter(r => r[1]).map(r => `<dt>${r[0]}</dt><dd>${esc(r[1])}</dd>`).join("");
+  $("#pl-tags").innerHTML = PL.tags.map((t, k) => `<span>${esc(t)}<button data-k="${k}" aria-label="Remove">×</button></span>`).join("");
+  $("#pl-star").textContent = PL.starred ? "★" : "☆";
+  plSelChanged();
+}
+
+$("#pl-insp").onclick = (e) => {
+  const m = e.target.closest("[data-mine]");
+  if (m) { const p = PL.mine.find(x => x.id === +m.dataset.mine); if (p) plUseMine(p, true); return; }
+  if (e.target.id === "pl-use-sugg") return plUseSugg();
+  const t = e.target.closest("#pl-tags button");
+  if (t) { PL.tags.splice(+t.dataset.k, 1); renderInsp(); }
+};
+$("#pl-prec").onclick = (e) => { const b = e.target.closest("button"); if (b) { plSetPrec(b.dataset.v); renderInsp(); } };
+$("#pl-radius").onchange = () => { plRadius(); renderInsp(); };
+$("#pl-name").addEventListener("input", plShowPin);
+$("#pl-star").onclick = () => { PL.starred = !PL.starred; renderInsp(); };
+$("#pl-tag-in").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== ",") return;
+  e.preventDefault();
+  const v = e.target.value.trim().replace(/,$/, "");
+  if (v && !PL.tags.some(t => t.toLowerCase() === v.toLowerCase())) PL.tags.push(v);
+  e.target.value = ""; renderInsp();
+});
+$("#pl-copy").onclick = async () => {
+  if (!PL.pin) return;
+  const txt = `${PL.pin.lat.toFixed(6)}, ${PL.pin.lon.toFixed(6)}`;
+  try { await navigator.clipboard.writeText(txt); toast("Copied " + txt); } catch (e) { prompt("Coordinates", txt); }
+};
+
+function plUseMine(p, fly) {
+  $("#pl-name").value = p.name; $("#pl-type").value = p.type || ""; $("#pl-notes").value = p.notes || "";
+  PL.tags = [...(p.tags || [])]; PL.starred = !!p.starred;
+  plSetPin(p.lat, p.lon, { prec: p.precision || "exact", radius: p.radius, keepPlace: true });
+  PL.placeId = p.id; $("#pl-del-place").hidden = false;
+  if (fly && PL.map) PL.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(PL.map.getZoom(), 15) });
+}
+
+$("#pl-save-place").onclick = async () => {
+  if (!PL.pin) return;
+  try {
+    const p = await api("/api/places/save", { id: PL.placeId, name: $("#pl-name").value, lat: PL.pin.lat, lon: PL.pin.lon,
+      precision: PL.prec, radius: PL.prec === "exact" ? null : +$("#pl-radius").value, type: $("#pl-type").value,
+      tags: PL.tags, notes: $("#pl-notes").value, starred: PL.starred, cover_id: [...PL.sel][0] || null });
+    PL.placeId = p.id; $("#pl-del-place").hidden = false;
+    PL.mine = await api("/api/places/mine"); renderMine();
+    toast(`Saved “${p.name}” to My Places.`);
   } catch (e) { fail(e); }
 };
+$("#pl-del-place").onclick = async () => {
+  if (!PL.placeId || !confirm("Remove this place from My Places? Photos keep their location.")) return;
+  try { await api("/api/places/delete", { id: PL.placeId }); PL.placeId = null; $("#pl-del-place").hidden = true;
+    PL.mine = await api("/api/places/mine"); renderMine(); renderInsp(); } catch (e) { fail(e); }
+};
+
+function plReset() {
+  PL.pin = null; PL.info = null; PL.placeId = null; PL.tags = []; PL.starred = false;
+  $("#pl-name").value = ""; $("#pl-type").value = ""; $("#pl-notes").value = "";
+  plSetPrec("exact"); plShowPin(); renderInsp();
+}
+$("#pl-cancel").onclick = () => { plReset(); PL.sel.clear(); renderFilm(); };
+$("#pl-add").onclick = () => {
+  const c = PL.map ? PL.map.getCenter() : { lat: 13.5, lng: -61.7 };
+  plReset(); plSetPin(c.lat, c.lng, { prec: "exact" });
+  $("#pl-name").focus();
+  toast("Drag the pin to the spot, name it, then Save to My Places.");
+};
+$("#pl-fit").onclick = plFit;
+function plFit() {
+  if (!PL.map) return;
+  const pts = PL.photos.filter(p => p.lat != null && (!PL.sel.size || PL.sel.has(p.id)));
+  const use = pts.length ? pts.map(p => [p.lon, p.lat]) : PL.points.map(p => [p[2], p[1]]);
+  if (!use.length) return;
+  const b = use.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(use[0], use[0]));
+  PL.map.fitBounds(b, { padding: 60, maxZoom: 15, duration: 600 });
+}
+
+$("#pl-apply").onclick = () => {
+  const ids = [...PL.sel];
+  if (!ids.length || !PL.pin) return;
+  const had = PL.photos.filter(p => PL.sel.has(p.id) && p.lat != null).length;
+  if (had && !confirm(`${plural(had, "of these photos already has", "of these photos already have")} a location. Replace it with this one?`)) return;
+  api("/api/places/apply", { ids, lat: PL.pin.lat, lon: PL.pin.lon, name: $("#pl-name").value.trim() || null,
+    precision: PL.prec, radius: PL.prec === "exact" ? null : +$("#pl-radius").value, place_id: PL.placeId })
+    .then(() => refreshState()).catch(fail);
+};
+
+async function plUseSugg() {
+  const ids = PL.photos.filter(p => PL.sel.has(p.id) && p.suggest).map(p => p.id);
+  try {
+    const r = await api("/api/locations/accept", { ids });
+    toast(`Location added to ${plural(r.updated, "photo")}. It's saved into the files next time you Tidy Up or file them.`);
+    PL.sel.clear(); refreshState(); loadPlaces();
+  } catch (e) { fail(e); }
+}
+
+/* search */
+let plTimer, plSeq = 0;
+$("#pl-q").addEventListener("input", () => {
+  $("#pl-q-x").hidden = !$("#pl-q").value;
+  clearTimeout(plTimer); plTimer = setTimeout(plSearch, 220);
+});
+$("#pl-q").addEventListener("keydown", (e) => {
+  const list = $$("#pl-results button[data-r]"); if (!list.length) return;
+  let k = list.findIndex(b => b.classList.contains("on"));
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault(); k = e.key === "ArrowDown" ? Math.min(list.length - 1, k + 1) : Math.max(0, k - 1);
+    list.forEach((b, j) => b.classList.toggle("on", j === k));
+  } else if (e.key === "Enter") { e.preventDefault(); (list[k] || list[0]).click(); }
+  else if (e.key === "Escape") $("#pl-results").hidden = true;
+});
+$("#pl-q-x").onclick = () => { $("#pl-q").value = ""; $("#pl-q-x").hidden = true; $("#pl-results").hidden = true; };
+async function plSearch() {
+  const q = $("#pl-q").value.trim();
+  if (q.length < 2) { $("#pl-results").hidden = true; return; }
+  const seq = ++plSeq;
+  let r = [];
+  try { r = await api(`/api/places/search?q=${encodeURIComponent(q)}${navigator.onLine ? "&online=1" : ""}`); } catch (e) { r = []; }
+  if (seq !== plSeq) return;
+  PL.results = r;
+  $("#pl-results").hidden = false;
+  $("#pl-results").innerHTML = r.length ? r.map((x, i) => `<button data-r="${i}"><span><b>${esc(x.name)}</b><span class="d">${esc(x.label || "")}</span></span>
+      <span class="k ${x.kind === "My place" ? "mine" : ""}">${esc(x.kind || "")}</span></button>`).join("")
+    : `<div class="none">Nothing found offline for “${esc(q)}”. Try a nearby town, or paste coordinates like 39.0963, -120.0324.</div>`;
+}
+$("#pl-results").onclick = (e) => {
+  const b = e.target.closest("[data-r]"); if (!b) return;
+  const x = PL.results[+b.dataset.r];
+  $("#pl-results").hidden = true;
+  if (x.place_id) { const p = PL.mine.find(m => m.id === x.place_id); if (p) return plUseMine(p, true); }
+  if (PL.map) PL.map.flyTo({ center: [x.lon, x.lat], zoom: x.zoom || 12 });
+  const exact = x.kind === "Coordinates";
+  plSetPin(x.lat, x.lon, exact ? { prec: "exact" } : { prec: "place", name: x.name, radius: x.zoom >= 14 ? 500 : x.zoom >= 11 ? 2000 : 10000 });
+};
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".pl-search")) $("#pl-results").hidden = true;
+  if (!e.target.closest(".pl-dd")) $("#pl-offline-menu").hidden = true;
+});
+
+/* offline maps */
+$("#pl-offline").onclick = async () => {
+  const menu = $("#pl-offline-menu");
+  if (!menu.hidden) { menu.hidden = true; return; }
+  let info;
+  try { info = PL.mapInfo = await api("/api/map/info"); } catch (e) { return fail(e); }
+  menu.innerHTML = `<h4>On this drive</h4>
+    ${info.world ? `<div class="row"><div class="grow">World overview<small>Countries, cities and main roads — built in</small></div></div>` : ""}
+    ${info.regions.map(r => `<div class="row"><div class="grow">${esc(r.name)}<small>${fmtSize(r.size)} · ${r.maxzoom >= 15 ? "streets & buildings" : "roads & towns"}</small></div>
+      <button class="link danger" data-del="${esc(r.id)}">Delete</button></div>`).join("") || `<p class="note">No detailed maps yet.</p>`}
+    <h4 style="margin-top:14px">Add a detailed map</h4>
+    ${info.tool ? `<select id="pl-dl-region"><option value="view">The area on screen now</option>${info.presets.map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join("")}</select>
+    <select id="pl-dl-zoom"><option value="15">Streets & buildings (best for finding a house)</option><option value="13">Roads & towns (smaller)</option></select>
+    <div class="dl-row"><button class="ghost" id="pl-dl-size">Check size</button><button class="dark" id="pl-dl-go">Download</button></div>
+    <p class="note" id="pl-dl-note">Maps are saved on your photo drive, so they work offline and travel with your photos. Downloading needs internet.</p>`
+    : `<p class="note">Downloading more maps isn't available in this copy of the app.</p>`}`;
+  menu.hidden = false;
+};
+function plRegionChoice() {
+  const v = $("#pl-dl-region").value;
+  if (v === "view") {
+    if (!PL.map) throw new Error("The map isn't showing.");
+    const b = PL.map.getBounds();
+    return { name: "Area near " + (PL.info && PL.info.city ? PL.info.city : `${b.getCenter().lat.toFixed(2)}, ${b.getCenter().lng.toFixed(2)}`),
+      bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] };
+  }
+  return PL.mapInfo.presets[+v];
+}
+$("#pl-offline-menu").onclick = async (e) => {
+  e.stopPropagation();
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    if (!confirm("Delete this map from the drive? You can download it again later.")) return;
+    try { await api("/api/map/delete", { id: del.dataset.del }); plReloadMap(); $("#pl-offline-menu").hidden = true; } catch (e2) { fail(e2); }
+    return;
+  }
+  if (e.target.id === "pl-dl-size") {
+    $("#pl-dl-note").textContent = "Checking…";
+    try {
+      const c = plRegionChoice();
+      const r = await api("/api/map/estimate", { bbox: c.bbox, maxzoom: +$("#pl-dl-zoom").value });
+      $("#pl-dl-note").textContent = r.bytes ? `${c.name}: about ${fmtSize(r.bytes)}.` : "Couldn't work out the size.";
+    } catch (e2) { $("#pl-dl-note").textContent = e2.message; }
+  }
+  if (e.target.id === "pl-dl-go") {
+    try {
+      const c = plRegionChoice();
+      await api("/api/map/download", { name: c.name, bbox: c.bbox, maxzoom: +$("#pl-dl-zoom").value });
+      $("#pl-offline-menu").hidden = true; refreshState();
+    } catch (e2) { fail(e2); }
+  }
+};
+function plReloadMap() {
+  if (!PL.map) return;
+  PL.thumbs.forEach(m => m.remove()); PL.thumbs.clear();
+  PL.mineMarkers.forEach(m => m.remove()); PL.mineMarkers = [];
+  if (PL.pinMarker) { PL.pinMarker.remove(); PL.pinMarker = null; }
+  const c = PL.map.getCenter(), z = PL.map.getZoom();
+  PL.map.remove(); PL.map = null; PL.mapReady = false;
+  $("#pl-nomap").hidden = true;
+  initMap().then(() => { if (PL.map) PL.map.jumpTo({ center: c, zoom: z }); });
+}
 
 /* ------------------------------------------------------------------ place picker */
 const P = { ids: [], chosen: null, map: null, marker: null, done: null, results: [] };

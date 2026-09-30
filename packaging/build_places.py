@@ -14,7 +14,10 @@ all_zip, alt_zip, admin1_txt, country_txt, out = sys.argv[1:6]
 KEEP_CLASSES = set("HLTSVA")
 # for sailors and travellers: every one of these, even without a Wikipedia page
 ALWAYS = {"ISL", "ISLS", "ISLET", "ATOL", "ANCH", "BAY", "BAYS", "COVE", "HBR", "MAR", "BCH", "BCHS", "LGN", "RF",
-          "CAPE", "PT", "PEN", "STRT", "CHN", "SD", "INLT", "LK"}
+          "CAPE", "STRT", "CHN", "SD"}
+WEIGHT = {"PCLI": 5000000, "PCLD": 3000000, "TERR": 2000000, "ADM1": 1000000, "SEA": 800000, "RGN": 400000,
+          "ISLS": 150000, "LK": 120000, "ISL": 100000, "MTS": 90000, "BAY": 80000, "GULF": 80000, "ADM2": 60000,
+          "PRK": 60000, "MT": 50000, "PK": 50000, "VLC": 50000, "ANCH": 40000, "MAR": 30000, "HBR": 30000}
 SKIP_CODES = {"SCH", "SCHC", "SCHT", "TOWR", "RSTN", "RSTP", "HSP", "HSPC", "PO", "BUSTN", "MTRO", "RDJCT","ADM3", "ADM4", "ADM5", "ADMD", "ADM1H", "ADM2H", "ADM3H", "ADM4H", "PCLH",
               "STMI", "WLL", "WLLS", "SPNG", "RSV", "CNL", "DTCH", "DTCHI", "BLDG", "HSE", "FRM", "CMTY"}
 
@@ -51,8 +54,8 @@ with open(country_txt, encoding="utf-8") as f:
             if len(p) > 4:
                 countries[p[0]] = p[4]
 
-n = 0
-with zipfile.ZipFile(all_zip) as z, gzip.open(out, "wt", encoding="utf-8", compresslevel=9) as w:
+rows = []
+with zipfile.ZipFile(all_zip) as z:
     with z.open("allCountries.txt") as raw:
         for line in io.TextIOWrapper(raw, encoding="utf-8"):
             p = line.rstrip("\n").split("\t")
@@ -74,7 +77,12 @@ with zipfile.ZipFile(all_zip) as z, gzip.open(out, "wt", encoding="utf-8", compr
                 continue
             cc = p[8]
             elev = p[15] or (p[16] if p[16] not in ("", "-9999") else "")
-            w.write("\t".join([nm, alt, str(lat), str(lon), p[7], admin1.get(cc + "." + p[10], ""),
-                               countries.get(cc, cc), p[14] or "0", elev]) + "\n")
-            n += 1
-print("places written:", n)
+            pop = int(p[14] or 0)
+            imp = pop + WEIGHT.get(p[7], 20000 if gid in wiki else 0)
+            rows.append((imp, "\t".join([nm, alt, str(lat), str(lon), p[7], admin1.get(cc + "." + p[10], ""),
+                                          countries.get(cc, cc), str(pop), elev])))
+rows.sort(key=lambda r: -r[0])   # most important first, so a search finds them first
+with gzip.open(out, "wt", encoding="utf-8", compresslevel=9) as w:
+    for _, line in rows:
+        w.write(line + "\n")
+print("places written:", len(rows))

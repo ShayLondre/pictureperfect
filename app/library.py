@@ -833,24 +833,54 @@ class Geo:
         return out
 
     def _features(self):
-        """Lakes, islands, bays, mountains, parks, regions… (built from GeoNames) for offline search."""
+        """Lakes, islands, bays, anchorages, mountains, parks, regions… (from GeoNames) for offline
+        search, kept compact: the rows as text plus one search string of their folded names."""
         if getattr(self, "_feat", None) is None:
-            feats = []
+            rows, index = [], []
             path = self._extra_file("features.tsv.gz")
             if path:
                 with gzip.open(path, "rt", encoding="utf-8") as f:
                     for line in f:
-                        p = line.rstrip("\n").split("\t")
-                        if len(p) < 9:
+                        p = line.split("\t", 2)
+                        if len(p) < 3:
                             continue
-                        try:
-                            lat, lon, pop = float(p[2]), float(p[3]), int(p[7] or 0)
-                        except ValueError:
-                            continue
-                        keys = {fold(p[0])} | {fold(x) for x in p[1].split("|") if x}
-                        feats.append((tuple(keys), p[0], lat, lon, p[4], p[5], p[6], pop, p[8]))
-            self._feat = feats
+                        names = [p[0]] + [x for x in p[1].split("|") if x]
+                        rows.append(line.rstrip("\n"))
+                        index.append("|" + "|".join(fold(x).replace("|", " ").replace("\n", " ") for x in names) + "|")
+            text = "\n".join(index) + "\n"
+            starts = [0]
+            for k in range(len(index) - 1):
+                starts.append(starts[-1] + len(index[k]) + 1)
+            self._feat = (rows, text, starts)
         return self._feat
+
+    def _feature_hits(self, ql, cap=400):
+        rows, text, starts = self._features()
+        found = {}
+        for rank, needle in ((0, "|" + ql + "|"), (1, "|" + ql), (2, " " + ql)):
+            pos, n = 0, 0
+            while n < cap:
+                pos = text.find(needle, pos)
+                if pos < 0:
+                    break
+                k = bisect.bisect_right(starts, pos) - 1
+                if k not in found:
+                    found[k] = rank
+                    n += 1
+                pos = starts[k + 1] if k + 1 < len(starts) else len(text)   # next row
+        out = []
+        for k, rank in found.items():
+            p = rows[k].split("\t")
+            if len(p) < 9:
+                continue
+            try:
+                lat, lon, pop = float(p[2]), float(p[3]), int(p[7] or 0)
+            except ValueError:
+                continue
+            out.append((rank, k, {"name": p[0], "lat": lat, "lon": lon, "kind": FEATURE_KIND.get(p[4], "Place"),
+                                  "label": ", ".join(x for x in (p[0], p[5], p[6]) if x),
+                                  "zoom": FEATURE_ZOOM.get(p[4], 11), "imp": pop + FEATURE_WEIGHT.get(p[4], 20000)}))
+        return out
 
     def search_all(self, q, limit=12):
         """Offline search: towns and cities plus natural places and regions."""
@@ -868,13 +898,8 @@ class Geo:
             if (" " + ql) in key:
                 return 2
             return None
-        for f in self._features():
-            r = min((x for x in (rank(k) for k in f[0]) if x is not None), default=None)
-            if r is not None:
-                imp = f[7] + FEATURE_WEIGHT.get(f[4], 20000)
-                hits.append((r, -imp, {"name": f[1], "lat": f[2], "lon": f[3], "kind": FEATURE_KIND.get(f[4], "Place"),
-                                       "label": ", ".join(x for x in (f[1], f[5], f[6]) if x),
-                                       "zoom": FEATURE_ZOOM.get(f[4], 11)}))
+        for r, k, h in self._feature_hits(ql):
+            hits.append((r, -h.pop("imp"), h))
         if self.names is not None:
             folded = getattr(self, "_names_folded", None)
             if folded is None or len(folded) != len(self.names):
@@ -2978,11 +3003,10 @@ class Library:
                     sug[int(k)] = v
         total = len(rows) if ids else self.q("""SELECT COUNT(*) AS n FROM files WHERE status='active'
                 AND pair_of IS NULL AND lat IS NULL AND loc_skip=0""")[0]["n"]
-        return {"total": total, "items": [{
-            "id": r["id"], "name": os.path.basename(r["path"]), "taken": r["taken"], "kind": r["kind"],
-            "thumb": r["thumb"], "lat": r["lat"], "lon": r["lon"], "place": r["place"],
-            "precision": r["gps_precision"] or ("exact" if r["lat"] is not None else None),
-            "needs_date": r["date_source"] in NEEDS_DATE, "suggest": sug.get(r["id"])} for r in rows]}
+        return {"total": total, "items": [dict(
+            self.public(r), lat=r["lat"], lon=r["lon"],
+            precision=r["gps_precision"] or ("exact" if r["lat"] is not None else None),
+            needs_date=r["date_source"] in NEEDS_DATE, suggest=sug.get(r["id"])) for r in rows]}
 
     def geotag(self, job, ids, lat, lon, name=None, precision="exact", radius=None, place_id=None):
         """Put one location on many photos and save it into the files (only the location changes)."""

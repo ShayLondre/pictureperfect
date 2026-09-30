@@ -333,17 +333,107 @@
   </section>
 
   <!-- Locations -->
-  <section id="v-locations" class="view narrow" hidden>
-    <div class="head">
-      <div>
-        <h2>Locations</h2>
-        <p class="muted" id="loc-sub"></p>
+  <section id="v-locations" class="view pl-view" hidden>
+    <div class="pl-top">
+      <div class="pl-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+        <input id="pl-q" placeholder="Search places, My Places, or paste coordinates" autocomplete="off" spellcheck="false">
+        <button class="pl-x" id="pl-q-x" hidden aria-label="Clear">×</button>
+        <div class="pl-results" id="pl-results" hidden></div>
       </div>
-      <button class="primary" id="btn-accept-all" hidden>Use all suggestions</button>
+      <div class="seg pl-show" id="pl-show">
+        <button data-v="photos" class="on">Photos on map</button>
+        <button data-v="places">My Places</button>
+      </div>
+      <div class="pl-top-r">
+        <div class="pl-dd">
+          <button class="ghost" id="pl-offline"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 19h14"/></svg>Offline Maps <span class="caret">▾</span></button>
+          <div class="pl-menu" id="pl-offline-menu" hidden></div>
+        </div>
+        <button class="ghost" id="pl-add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Add Place</button>
+      </div>
     </div>
-    <div id="loc-list"></div>
-    <div class="more"><button class="ghost" id="loc-more" hidden>Show more days</button></div>
-    <div class="empty" id="loc-empty" hidden><div class="big-check">✓</div>Every photo has a location.</div>
+    <div class="pl-body">
+      <div class="pl-mapcol">
+        <div class="pl-map" id="pl-map">
+          <div class="pl-nomap" id="pl-nomap" hidden></div>
+          <div class="pl-tools">
+            <button id="pl-fit" title="Show the selected photos">⤢</button>
+          </div>
+          <div class="pl-coords" id="pl-coords"></div>
+        </div>
+        <div class="pl-strip">
+          <div class="pl-strip-head">
+            <div class="seg small" id="pl-src">
+              <button data-v="none" class="on">Need a location</button>
+              <button data-v="here" hidden>On the map</button>
+              <button data-v="ids" hidden>Chosen</button>
+            </div>
+            <b id="pl-count"></b>
+            <span class="muted small" id="pl-hint">Click to select · Shift-click for a range · double-click to view</span>
+            <span class="grow"></span>
+            <button class="link" id="pl-all">Select all</button>
+            <button class="link" id="pl-none">Select none</button>
+          </div>
+          <div class="pl-film" id="pl-film"></div>
+        </div>
+      </div>
+      <aside class="pl-insp">
+        <div class="pl-insp-body" id="pl-insp">
+          <div class="pl-empty" id="pl-insp-empty">
+            <div class="pl-empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg></div>
+            <b>Choose a location</b>
+            <p>Select photos below, then search for a place, pick one of My Places, or click the map to drop a pin. Drag the pin to fine-tune it.</p>
+          </div>
+          <div id="pl-form" hidden>
+            <div class="pl-h"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Location</div>
+            <div class="pl-namerow">
+              <input id="pl-name" placeholder="Name this place, e.g. Mom's Cabin" autocomplete="off">
+              <button class="pl-star" id="pl-star" title="Favourite place">☆</button>
+            </div>
+            <div class="pl-addr" id="pl-addr"></div>
+            <div class="pl-coordrow"><span id="pl-ll"></span><button class="icon-btn" id="pl-copy" title="Copy coordinates">⧉</button></div>
+            <div class="pl-sub">How sure are you?</div>
+            <div class="seg small pl-prec" id="pl-prec">
+              <button data-v="exact" class="on">Exact spot</button>
+              <button data-v="approx">Approximate</button>
+              <button data-v="place">Place only</button>
+            </div>
+            <div class="pl-radius" id="pl-radius-row" hidden>
+              Within about <select id="pl-radius">
+                <option value="100">100 m</option><option value="500" selected>500 m</option>
+                <option value="2000">2 km</option><option value="10000">10 km</option><option value="50000">50 km</option>
+              </select>
+            </div>
+            <details class="pl-details" open>
+              <summary>Map Details</summary>
+              <dl id="pl-dl"></dl>
+            </details>
+            <label class="pl-sub" for="pl-type">Place Type</label>
+            <input id="pl-type" list="pl-types" placeholder="Personal Place">
+            <datalist id="pl-types">
+              <option value="Personal Place"><option value="Home"><option value="Restaurant"><option value="Hotel">
+              <option value="Anchorage"><option value="Marina"><option value="Landmark"><option value="Nature">
+              <option value="City"><option value="Beach"><option value="Other">
+            </datalist>
+            <div class="pl-sub">Tags</div>
+            <div class="pl-tags" id="pl-tags"></div>
+            <input id="pl-tag-in" placeholder="Add tag…" autocomplete="off">
+            <label class="pl-sub" for="pl-notes">Notes</label>
+            <textarea id="pl-notes" rows="3" placeholder="Anything you want to remember about this place"></textarea>
+            <div class="pl-saverow">
+              <button class="ghost" id="pl-save-place">Save to My Places</button>
+              <button class="link danger" id="pl-del-place" hidden>Remove from My Places</button>
+            </div>
+            <div class="pl-sugg" id="pl-sugg" hidden></div>
+          </div>
+        </div>
+        <div class="pl-foot">
+          <button class="ghost" id="pl-cancel">Cancel</button>
+          <button class="dark" id="pl-apply" disabled>Apply to 0 Photos</button>
+        </div>
+      </aside>
+    </div>
   </section>
 
   <!-- Tidy Up: pick photos already on the drive and fix them -->

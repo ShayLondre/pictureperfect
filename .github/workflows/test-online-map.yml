@@ -34,7 +34,7 @@ jobs:
           cd app && PHOTO_ORGANIZER_PORT=8799 PHOTO_ORGANIZER_NO_BROWSER=1 PO_GEO_DIR=/tmp/ma/geo PO_MAP_DIR=/tmp/ma/maps nohup python3 server.py > ../out/server.log 2>&1 &
           sleep 4
           curl -s -XPOST -H 'Content-Type: application/json' -d '{"path":"/tmp/lib"}' localhost:8799/api/library; sleep 20
-          cd .. && (python3 packaging/tests/online_map.py out > out/test-output.txt 2>&1 || true)
+          (python3 packaging/tests/online_map.py out > out/test-output.txt 2>&1 || true)
       - uses: softprops/action-gh-release@v2
         if: always()
         with:

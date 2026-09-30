@@ -623,6 +623,23 @@
 </div>
 
 <!-- Big view for choosing -->
+<!-- Duplicates: the look-alikes side by side, large -->
+<div id="cmp" class="cmp" hidden>
+  <div class="cmp-top">
+    <div><b id="cmp-title"></b> <span class="muted small" id="cmp-hint">Click a picture to zoom in on the same spot in all of them · click Keep / Set aside to choose</span></div>
+    <button class="cmp-x" id="cmp-x" aria-label="Close">×</button>
+  </div>
+  <div class="cmp-body" id="cmp-body"></div>
+  <div class="cmp-foot">
+    <button class="ghost" id="cmp-prev">‹ Previous group</button>
+    <span class="spacer"></span>
+    <button class="ghost" id="cmp-all">They're different — keep all</button>
+    <button class="dark" id="cmp-done">Done</button>
+    <span class="spacer"></span>
+    <button class="ghost" id="cmp-next">Next group ›</button>
+  </div>
+</div>
+
 <div id="cull" class="viewer cull" hidden>
   <button class="x" id="cu-close" aria-label="Close">×</button>
   <button class="nav prev" id="cu-prev" aria-label="Previous">‹</button>

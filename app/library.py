@@ -621,6 +621,16 @@ def parse_coords(text):
     return round(lat, 6), round(lon, 6)
 
 
+# EXIF orientation -> how to turn the picture upright (same as Pillow's exif_transpose)
+ORIENT_OPS = {}
+try:
+    ORIENT_OPS = {2: Image.Transpose.FLIP_LEFT_RIGHT, 3: Image.Transpose.ROTATE_180, 4: Image.Transpose.FLIP_TOP_BOTTOM,
+                  5: Image.Transpose.TRANSPOSE, 6: Image.Transpose.ROTATE_270, 7: Image.Transpose.TRANSVERSE,
+                  8: Image.Transpose.ROTATE_90}
+except Exception:
+    pass
+
+
 def fmt_bytes(n):
     n = float(n or 0)
     for unit in ("bytes", "KB", "MB", "GB", "TB"):
@@ -1301,6 +1311,25 @@ class Library:
         self._gm = None
         if first_date_check:
             self._check_dates()     # a library from before this check: look through it once
+        self._redo_raw_previews()
+
+    def _redo_raw_previews(self):
+        """RAW previews made before rotation was handled may be sideways: make them again (once)."""
+        done = self.q("SELECT value FROM settings WHERE key='raw_previews_upright'")
+        if done:
+            return
+        raw_ext = tuple(RAW_EXT)
+        rows = [r for r in self.q("SELECT id, path FROM files WHERE status='active' AND kind='photo'")
+                if r["path"].lower().endswith(raw_ext)]
+        for r in rows:
+            for p in (self.thumb_path(r["id"]), os.path.join(self.data, "previews", "%d.jpg" % r["id"])):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        if rows:
+            self.x("UPDATE files SET thumb=0, dhash=NULL, scene=NULL WHERE id=?", [(r["id"],) for r in rows], many=True)
+        self.x("INSERT OR REPLACE INTO settings(key, value) VALUES('raw_previews_upright', '1')")
 
     # ---------- db helpers ----------
     def q(self, sql, args=()):
@@ -1660,6 +1689,21 @@ class Library:
             except OSError:
                 pass
 
+    def _file_orientation(self, full):
+        """How the camera was held (EXIF orientation 1–8), read from the file itself."""
+        cache = self.__dict__.setdefault("_orient_cache", {})
+        try:
+            key = (full, os.path.getmtime(full))
+        except OSError:
+            return 1
+        if key not in cache:
+            try:
+                out, _ = self.et.run(["-s3", "-n", "-Orientation", full])
+                cache[key] = int((out or "1").strip().splitlines()[0] or 1)
+            except Exception:
+                cache[key] = 1
+        return cache[key]
+
     def open_image(self, full, size):
         """Open any photo as a PIL image, falling back to macOS tools for RAW/HEIC."""
         ext = os.path.splitext(full)[1].lower()
@@ -1676,6 +1720,16 @@ class Library:
                 im = Image.open(io.BytesIO(data))
                 im.draft("RGB", (size, size))
                 im.load()
+                # the preview inside a RAW usually doesn't know which way the camera was held;
+                # the RAW file does — turn the preview to match
+                try:
+                    own = im.getexif().get(0x0112, 1)
+                except Exception:
+                    own = 1
+                if own in (None, 1):
+                    op = ORIENT_OPS.get(self._file_orientation(full))
+                    if op is not None:
+                        im = im.transpose(op)
                 return im
         else:
             try:

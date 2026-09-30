@@ -1211,6 +1211,7 @@ function renderDupes() {
       <div class="card-actions">
         <button class="primary" data-act="done">Done</button>
         <button class="ghost" data-act="all">They're different — keep all</button>
+        <button class="ghost" data-act="compare">⤢ Compare large</button>
         <span class="spacer"></span>
         <button class="link" data-act="skip">Skip for now</button>
       </div>
@@ -1223,7 +1224,8 @@ function dupTile(g, f) {
   if (f.width) bits.push(`${f.width}×${f.height}`);
   bits.push(fmtSize(f.size));
   return `<div class="dup ${keep ? "keep" : "aside"}" data-id="${f.id}">
-    <div class="img"><img loading="lazy" src="/thumb/${f.id}" alt=""><span class="tag">${keep ? "Keep" : "Set aside"}</span></div>
+    <div class="img"><img loading="lazy" src="/thumb/${f.id}" alt=""><span class="tag">${keep ? "Keep" : "Set aside"}</span>
+      <button class="zoomb" data-zoom title="See them large, side by side">⤢</button></div>
     <div class="meta">
       <b>${esc(f.name)}</b><br>
       ${esc(f.folder || "(top of drive)")}<br>
@@ -1238,6 +1240,7 @@ $("#dupe-list").onclick = async (e) => {
   if (!card) return;
   const key = card.dataset.key;
   const g = D.groups.find(x => x.key === key);
+  if (e.target.closest("[data-zoom]") || (e.target.closest("[data-act]") || {}).dataset?.act === "compare") return openCompare(key);
   const tileEl = e.target.closest(".dup");
   if (tileEl) {
     const id = +tileEl.dataset.id;
@@ -1261,6 +1264,80 @@ $("#dupe-list").onclick = async (e) => {
     if (!D.groups.length) loadDupes();
   } catch (e2) { fail(e2); }
 };
+$("#dupe-list").ondblclick = (e) => { const card = e.target.closest(".card"); if (card && e.target.closest(".dup")) openCompare(card.dataset.key); };
+
+/* compare look-alikes large, side by side, zooming into the same spot in each */
+const CMP = { key: null, zoom: false };
+function openCompare(key) {
+  CMP.key = key; CMP.zoom = false;
+  $("#cmp").hidden = false; $("#cmp").classList.remove("zoomed");
+  renderCompare();
+}
+function renderCompare() {
+  const g = D.groups.find(x => x.key === CMP.key);
+  if (!g) return closeCompare();
+  const i = D.groups.indexOf(g);
+  $("#cmp-title").textContent = `${g.kind === "exact" ? "Exact copies" : "Look-alikes"} · ${plural(g.files.length, "file")} · ${fmtWhen(g.taken)} · group ${i + 1} of ${D.groups.length}`;
+  $("#cmp-prev").disabled = i === 0; $("#cmp-next").disabled = i === D.groups.length - 1;
+  $("#cmp-body").innerHTML = g.files.map(f => {
+    const keep = D.choice[g.key][f.id];
+    return `<div class="cmp-p ${keep ? "keep" : "aside"}" data-id="${f.id}">
+      <div class="cmp-img"><img src="/media/${f.id}" alt="" onerror="this.src='/thumb/${f.id}'"></div>
+      <div class="cmp-info"><div class="grow"><b>${esc(f.name)}</b><br>
+        <span class="muted">${[f.width ? `${f.width}×${f.height}` : "", fmtSize(f.size)].filter(Boolean).join(" · ")}${f.id === g.keep ? ` · <span class="best">best copy</span>` : ""}</span><br>
+        <span class="muted">${esc(f.folder || "(top of drive)")}${f.place ? " · " + esc(f.place.split(",")[0]) : ""}</span></div>
+        <button class="cmp-tag" data-toggle>${keep ? "Keep" : "Set aside"}</button></div>
+    </div>`;
+  }).join("");
+}
+function closeCompare() { $("#cmp").hidden = true; $("#cmp-body").innerHTML = ""; if (D.groups.length) renderDupes(); }
+$("#cmp-body").onclick = (e) => {
+  const p = e.target.closest(".cmp-p"); if (!p) return;
+  const g = D.groups.find(x => x.key === CMP.key);
+  if (e.target.closest("[data-toggle]")) {
+    const id = +p.dataset.id;
+    D.choice[g.key][id] = !D.choice[g.key][id];
+    return renderCompare();
+  }
+  const box = e.target.closest(".cmp-img"); if (!box) return;
+  CMP.zoom = !CMP.zoom;
+  $("#cmp").classList.toggle("zoomed", CMP.zoom);
+  const img = box.querySelector("img"), r = img.getBoundingClientRect();
+  const ox = ((e.clientX - r.left) / r.width) * 100, oy = ((e.clientY - r.top) / r.height) * 100;
+  $$("#cmp-body .cmp-img img").forEach(im => {   // same spot in every copy, to compare sharpness
+    im.style.transformOrigin = `${ox}% ${oy}%`;
+    im.style.transform = CMP.zoom ? "scale(3)" : "";
+  });
+};
+$("#cmp-x").onclick = closeCompare;
+$("#cmp-prev").onclick = () => { const i = D.groups.findIndex(x => x.key === CMP.key); if (i > 0) { CMP.key = D.groups[i - 1].key; CMP.zoom = false; $("#cmp").classList.remove("zoomed"); renderCompare(); } };
+$("#cmp-next").onclick = () => { const i = D.groups.findIndex(x => x.key === CMP.key); if (i < D.groups.length - 1) { CMP.key = D.groups[i + 1].key; CMP.zoom = false; $("#cmp").classList.remove("zoomed"); renderCompare(); } };
+async function cmpResolve(all) {
+  const g = D.groups.find(x => x.key === CMP.key); if (!g) return;
+  let keep = g.files.filter(f => D.choice[g.key][f.id]).map(f => f.id);
+  let aside = g.files.filter(f => !D.choice[g.key][f.id]).map(f => f.id);
+  if (all) { keep = g.files.map(f => f.id); aside = []; }
+  if (!keep.length) return toast("Keep at least one copy.");
+  try {
+    const r = await api("/api/dupes/resolve", { key: g.key, keep, aside });
+    const i = D.groups.indexOf(g);
+    D.groups = D.groups.filter(x => x.key !== g.key);
+    if (r.moved) toast(`${plural(r.moved, "copy", "copies")} set aside.`);
+    refreshState();
+    const next = D.groups[Math.min(i, D.groups.length - 1)];
+    if (next) { CMP.key = next.key; CMP.zoom = false; $("#cmp").classList.remove("zoomed"); renderCompare(); }
+    else { closeCompare(); loadDupes(); }
+  } catch (e) { fail(e); }
+}
+$("#cmp-done").onclick = () => cmpResolve(false);
+$("#cmp-all").onclick = () => cmpResolve(true);
+document.addEventListener("keydown", (e) => {
+  if ($("#cmp").hidden) return;
+  if (e.key === "Escape") closeCompare();
+  else if (e.key === "ArrowRight") $("#cmp-next").click();
+  else if (e.key === "ArrowLeft") $("#cmp-prev").click();
+});
+
 $("#dupes-seg").onclick = (e) => {
   const b = e.target.closest("button"); if (!b) return;
   D.kind = b.dataset.k;

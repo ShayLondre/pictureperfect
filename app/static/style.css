@@ -911,3 +911,32 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
 .upd b { display: block; font-size: 14px; margin-bottom: 2px; }
 .upd .dark { margin-top: 8px; width: 100%; padding: 8px 12px; }
 .upd .muted { color: var(--muted); }
+/* Duplicates: compare side by side */
+.dup .img { position: relative; }
+.dup .zoomb { position: absolute; right: 8px; bottom: 8px; width: 30px; height: 30px; border-radius: 8px; background: rgba(0,0,0,.55);
+  color: #fff; font-size: 15px; display: grid; place-items: center; opacity: .85; }
+.dup .zoomb:hover { opacity: 1; }
+.cmp { position: fixed; inset: 0; z-index: 70; background: #0e1010; color: #eee; display: flex; flex-direction: column; }
+.cmp-top { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; gap: 12px; }
+.cmp-top .muted { color: #9aa19e; margin-left: 10px; }
+.cmp-x { width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.12); color: #fff; font-size: 22px; }
+.cmp-body { flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 12px; padding: 0 16px; }
+.cmp-p { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; background: #1c1f1f;
+  border: 3px solid transparent; }
+.cmp-p.keep { border-color: #4f8fe6; }
+.cmp-p.aside { opacity: .8; }
+.cmp-img { flex: 1; min-height: 0; overflow: hidden; display: grid; place-items: center; cursor: zoom-in; background: #111; }
+.cmp-img img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform .15s ease; }
+.cmp.zoomed .cmp-img { cursor: zoom-out; }
+.cmp-info { padding: 10px 12px; font-size: 13px; line-height: 1.5; display: flex; gap: 12px; align-items: flex-start; }
+.cmp-info .grow { flex: 1; min-width: 0; }
+.cmp-info b { font-size: 14px; word-break: break-all; }
+.cmp-info .muted { color: #9aa19e; }
+.cmp-info .best { color: #7fb2ff; }
+.cmp-tag { flex: none; padding: 7px 14px; border-radius: 9px; font-weight: 600; font-size: 13px; }
+.cmp-p.keep .cmp-tag { background: #4f8fe6; color: #fff; }
+.cmp-p.aside .cmp-tag { background: #b0543a; color: #fff; }
+.cmp-foot { display: flex; align-items: center; gap: 10px; padding: 14px 20px; }
+.cmp-foot .spacer { flex: 1; }
+.cmp-foot .ghost { background: rgba(255,255,255,.08); color: #eee; border-color: rgba(255,255,255,.15); }
+.cmp-foot .dark { background: #fff; color: #111; padding: 9px 26px; }

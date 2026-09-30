@@ -1,0 +1,43 @@
+name: Test map region download
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -r app/requirements.txt
+          mkdir -p bin tmp
+          gh release download -R protomaps/go-pmtiles --pattern '*Linux_x86_64*' --dir tmp
+          tar xzf tmp/*Linux_x86_64*.tar.gz -C tmp
+          cp "$(find tmp -name pmtiles -type f | head -1)" bin/pmtiles && chmod +x bin/pmtiles
+      - name: Estimate and download a small region the way the app does
+        run: |
+          mkdir -p lib
+          PO_BIN_DIR=$PWD/bin python3 - <<'PY'
+          import sys, time
+          sys.path.insert(0, "app")
+          import library as L
+          lib = L.Library("lib")
+          bbox = [-61.30, 12.97, -61.18, 13.06]   # Bequia
+          t = time.time()
+          print("estimate:", lib.map_estimate(bbox, 15), round(time.time() - t, 1), "s")
+          job = L.Job("t")
+          t = time.time()
+          print("download:", lib.map_download(job, "Bequia test", bbox, 15), round(time.time() - t, 1), "s")
+          print("regions:", lib.map_info()["regions"])
+          ca = [-124.5, 32.5, -114.1, 42.05]
+          print("California estimate z15:", lib.map_estimate(ca, 15))
+          print("California estimate z13:", lib.map_estimate(ca, 13))
+          PY
+          ls -la lib/.photo-organizer/maps
+          bin/pmtiles show lib/.photo-organizer/maps/bequia-test.pmtiles | head -30

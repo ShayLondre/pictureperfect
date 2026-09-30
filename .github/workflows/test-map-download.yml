@@ -6,6 +6,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -23,7 +25,7 @@ jobs:
       - name: Estimate and download a small region the way the app does
         run: |
           mkdir -p lib
-          PO_BIN_DIR=$PWD/bin python3 - <<'PY'
+          PO_BIN_DIR=$PWD/bin python3 - <<'PY' 2>&1 | tee result.txt
           import sys, time
           sys.path.insert(0, "app")
           import library as L
@@ -39,5 +41,14 @@ jobs:
           print("California estimate z15:", lib.map_estimate(ca, 15))
           print("California estimate z13:", lib.map_estimate(ca, 13))
           PY
-          ls -la lib/.photo-organizer/maps
-          bin/pmtiles show lib/.photo-organizer/maps/bequia-test.pmtiles | head -30
+          ls -la lib/.photo-organizer/maps | tee -a result.txt
+          bin/pmtiles show lib/.photo-organizer/maps/bequia-test.pmtiles 2>&1 | head -30 | tee -a result.txt
+      - uses: softprops/action-gh-release@v2
+        if: always()
+        with:
+          tag_name: map-test
+          name: Map download test (not an app release)
+          prerelease: true
+          files: |
+            result.txt
+            lib/.photo-organizer/maps/bequia-test.pmtiles

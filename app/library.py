@@ -2609,7 +2609,7 @@ class Library:
                 "width": r["width"], "height": r["height"], "size": r["size"],
                 "camera": r["camera"], "thumb": r["thumb"], "status": r["status"],
                 "tags": split_tags(r.get("tags")), "title": r.get("title"), "rating": r.get("rating"),
-                "people": split_tags(r.get("people")), "precision": r.get("gps_precision"),
+                "people": split_tags(r.get("people")), "precision": r.get("gps_precision"), "radius": r.get("gps_radius"), "place_id": r.get("place_id"),
                 "raw": self._raw_map().get(r["id"])}
 
     def _raw_map(self):

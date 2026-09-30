@@ -1066,6 +1066,7 @@ function renderViewer() {
       <div><dt>Place</dt><dd>${it.place ? esc(it.place) : `<span class="muted">No location</span>`}
         ${it.lat != null ? `<div class="muted small v-ll">${fmtLatLon(it.lat, it.lon)}
             <button class="link" id="v-copy" title="Copy coordinates">Copy</button><button class="link" id="v-onmap">Show on map</button></div>
+          <div><button class="ghost small-btn" id="v-uselocation" style="margin-top:6px">Use this location for other photos…</button></div>
           <div class="muted small">${it.gps_source === "nearby" ? "From a nearby photo" : it.gps_source === "manual" ? "Set by you" : "From the camera's GPS"}${it.precision && it.precision !== "exact" ? " · approximate" : ""}</div>` : ""}
         ${it.city && it.place && !it.place.startsWith(it.city) ? `<div class="muted small">Filed under ${esc(it.city)}</div>` : ""}</dd></div>
       ${it.camera ? `<div><dt>Camera</dt><dd>${esc(it.camera)}</dd></div>` : ""}
@@ -1088,6 +1089,12 @@ function renderViewer() {
   if (rv) rv.onclick = () => api("/api/reveal/" + it.id, {});
   const vc = $("#v-copy");
   if (vc) vc.onclick = () => copyText(`${it.lat.toFixed(6)}, ${it.lon.toFixed(6)}`);
+  const vu = $("#v-uselocation");
+  if (vu) vu.onclick = async () => {
+    closeViewer(); showTab("locations");
+    await loadPlaces();
+    plUseLocationOf(it, true);
+  };
   const vo = $("#v-onmap");
   if (vo) vo.onclick = () => { closeViewer(); openPlaces([it.id], true); };
   const vg = $("#v-guess");
@@ -1639,8 +1646,24 @@ function plCurrentHtml() {
     : `<b>${plural(located.length, "selected photo")} in ${n(groups.size)} different places</b>
        <div class="ll">${[...groups.values()].slice(0, 4).map(g => esc(shortPlace(g.p.place || "") || fmtLatLon(g.p.lat, g.p.lon)) + ` (${g.n})`).join(" · ")}</div>`;
   return `<div class="pl-cur"><div class="muted small">${located.length === 1 ? "This photo is at" : groups.size === 1 ? `These ${plural(located.length, "photo")} are at` : "Now at"}</div>${head}
-    <div class="row2">${groups.size === 1 ? `<button class="link" data-cur="edit">Move this pin</button><button class="link" data-cur="copy">Copy coordinates</button>` : ""}
+    <div class="row2">${groups.size === 1 ? `<button class="link" data-cur="edit">Use this location</button><button class="link" data-cur="copy">Copy coordinates</button>` : ""}
     <button class="link" data-cur="show">Show on map</button></div></div>`;
+}
+
+// copy one photo's location onto others: the pin goes exactly where that photo is
+function plUseLocationOf(p, switchToNeeding) {
+  const mine = p.place_id ? PL.mine.find(m => m.id === p.place_id) : null;
+  if (mine) plUseMine(mine, true);
+  else {
+    $("#pl-name").value = ""; PL.tags = []; $("#pl-type").value = ""; $("#pl-notes").value = "";
+    plSetPin(p.lat, p.lon, { prec: p.precision || "exact", radius: p.radius || undefined,
+      name: (p.place || "").split(",")[0].trim() });
+    if (PL.map) PL.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(PL.map.getZoom(), 15) });
+  }
+  PL.copiedFrom = p.id;
+  if (switchToNeeding) plShowSource("none");
+  else { PL.sel.delete(p.id); renderFilm(); }
+  toast("Location copied. Now select the photos that should get it — e.g. under Need a location — then press Apply.", 6000);
 }
 
 function renderInsp() {
@@ -1678,9 +1701,7 @@ $("#pl-insp").onclick = (e) => {
     const p = located[0]; if (!p) return;
     if (cur.dataset.cur === "copy") return copyText(`${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`);
     if (cur.dataset.cur === "show") return plFit();
-    // start from where they are now: drag the pin, rename, then Apply
-    if (PL.map) PL.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(PL.map.getZoom(), 15) });
-    return plSetPin(p.lat, p.lon, { prec: p.precision || "exact", name: shortPlace(p.place || "") });
+    return plUseLocationOf(p, false);
   }
   const t = e.target.closest("#pl-tags button");
   if (t) { PL.tags.splice(+t.dataset.k, 1); renderInsp(); }

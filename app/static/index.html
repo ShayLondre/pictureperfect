@@ -466,6 +466,11 @@
           <div class="panel" data-pane="name">
             <label class="fl">Name for all selected photos
               <input id="tu-name-all" placeholder="Leave empty to keep each photo's own name" autocomplete="off" list="pp-albums"></label>
+            <div class="fl">Find &amp; replace in names
+              <div class="frrow"><input id="tu-find" placeholder="Find, e.g. Tahoma" autocomplete="off" spellcheck="false">
+                <span class="muted">→</span><input id="tu-repl" placeholder="Replace with, e.g. Bequia" autocomplete="off" spellcheck="false"></div>
+              <button class="ghost small-btn" id="tu-fr-go" disabled>Replace in selected photos</button></div>
+            <div class="hint" id="tu-fr-note">Fixes a wrong word in many names at once. Only the name part changes; the date and time stay.</div>
             <label class="fl">Filename format
               <select id="tu-format">
                 <option value="1">YYYY.MM.DD HHMM Event</option>
@@ -488,7 +493,8 @@
           <div class="panel" data-pane="place" hidden>
             <div class="fl">Location
               <div class="placerow"><button class="ghost placepick" id="tu-place">+ Add a place</button><button class="link" id="tu-place-clear" hidden>Clear</button></div></div>
-            <label class="opt"><input type="checkbox" id="tu-place-all"> Also replace locations that came from GPS</label>
+            <label class="opt"><input type="checkbox" id="tu-place-keep"> <span id="tu-place-keep-l">Keep the location on photos that already have one</span></label>
+            <label class="opt"><input type="checkbox" id="tu-place-off"> Remove the location from the selected photos</label>
             <button class="link" id="tu-to-places" style="padding-left:0">Find the exact spot on the map (Places) →</button>
             <div class="hint" id="tu-place-note"></div>
           </div>

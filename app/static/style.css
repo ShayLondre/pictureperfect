@@ -876,3 +876,7 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
   .pl-top { flex-wrap: wrap; }
 }
 .pl-filter { width: 230px; flex: none; padding: 5px 10px; font-size: 13px; border-radius: 8px; }
+.frrow { display: flex; align-items: center; gap: 6px; }
+.frrow input { flex: 1; min-width: 0; }
+.tu-left .opt, .panel .opt { flex-wrap: nowrap; align-items: flex-start; }
+.tu-left .opt input[type=checkbox], .panel .opt input[type=checkbox] { flex: none; margin-top: 2px; }

@@ -1843,9 +1843,10 @@ async function searchPlaces() {
   if (q.length < 2) return;
   $("#pk-results").innerHTML = `<p class="muted small">Searching…</p>`;
   try {
-    P.results = await api("/api/places?q=" + encodeURIComponent(q));
+    // offline first: My Places, coordinates, towns, islands, bays… (online results only if nothing is found)
+    P.results = await api(`/api/places/search?q=${encodeURIComponent(q)}${navigator.onLine ? "&online=1" : ""}`);
     $("#pk-results").innerHTML = P.results.length
-      ? P.results.map((p, i) => `<button data-i="${i}">${esc(p.label)}${p.detail ? `<span class="d">${esc(p.detail)}</span>` : ""}</button>`).join("")
+      ? P.results.map((p, i) => `<button data-i="${i}">${esc(p.name || p.label)}<span class="d">${esc([p.kind, p.label].filter(Boolean).join(" · "))}</span></button>`).join("")
       : `<p class="muted small">Nothing found. Try a nearby town, or click the map.</p>`;
   } catch (e) { $("#pk-results").innerHTML = `<p class="muted small">${esc(e.message)}</p>`; }
 }
@@ -1919,7 +1920,7 @@ function tuCrumbs() {
 function tuShown() {
   return TU.photos.filter(p => !TU.filter || (TU.filter === "sel" ? TU.sel.has(p.id) : tuEdited(p.id)));
 }
-const tuEdited = (id) => TU.names[id] !== undefined || (TU.sel.has(id) && (tuShift() || TU.place || $("#tu-name-all").value.trim() || $("#tu-album").value || $("#tu-tags").value.trim()));
+const tuEdited = (id) => TU.names[id] !== undefined || (TU.sel.has(id) && (tuShift() || TU.place || $("#tu-place-off").checked || $("#tu-name-all").value.trim() || $("#tu-album").value || $("#tu-tags").value.trim()));
 
 function renderTidy() {
   tuCrumbs();
@@ -1991,9 +1992,18 @@ function renderTidyPanel() {
   $("#tu-place").textContent = TU.place ? "📍 " + shortPlace(TU.place.label || placeName(TU.place)) : "+ Add a place";
   $("#tu-place-clear").hidden = !TU.place;
   const withGps = [...TU.sel].filter(id => TU.info[id] && TU.info[id].lat != null).length;
-  $("#tu-place-note").textContent = TU.place
-    ? ($("#tu-place-all").checked ? `Goes on all ${plural(k, "photo")}.` : `Goes on ${plural(k - withGps, "photo")} without a location.${withGps ? ` ${plural(withGps, "photo")} with GPS keep${withGps === 1 ? "s" : ""} ${withGps === 1 ? "its" : "their"} own.` : ""}`)
-    : "Search for a place or drop a pin on the map.";
+  const off = $("#tu-place-off").checked;
+  $("#tu-place-keep-l").textContent = `Keep the location on photos that already have one${withGps ? ` (${n(withGps)} of the selected)` : ""}`;
+  $("#tu-place-keep").closest(".opt").hidden = !withGps || off;
+  $("#tu-place").disabled = off;
+  const keep = $("#tu-place-keep").checked;
+  $("#tu-place-note").textContent = off
+    ? `The location will be taken off ${plural(withGps, "photo")}${withGps ? " (and out of the files)" : ""}. Names that were just the town name are cleared too.`
+    : TU.place
+    ? (keep && withGps ? `Goes on ${plural(k - withGps, "photo")} without a location; ${plural(withGps, "photo")} keep${withGps === 1 ? "s its" : " their"} own.`
+      : `Goes on all ${plural(k, "selected photo")}${withGps ? `, replacing the location ${withGps === 1 ? "one already has" : `${n(withGps)} already have`}` : ""}. Names that were just the old town name follow the new place.`)
+    : `Choose the place for ${k ? `all ${plural(k, "selected photo")}` : "the selected photos"}: search for it or drop a pin on the map.`;
+  $("#tu-fr-go").disabled = !$("#tu-find").value.trim() || !k;
   // preview
   const L2 = TU.pvList;
   const changing = L2.filter(x => x.changes).length;
@@ -2016,7 +2026,7 @@ function tuPayload() {
   const al = $("#tu-album").value;
   const alb = al ? TU.albums.find(a => a.key === al) : null;
   return { ids: [...TU.sel], title: alb ? alb.name : (nameAll || null), names, shift: tuShift(), place: TU.place,
-           replace_place: $("#tu-place-all").checked, tags: $("#tu-tags").value.split(",").map(t => t.trim()).filter(Boolean),
+           replace_place: !$("#tu-place-keep").checked, remove_place: $("#tu-place-off").checked, tags: $("#tu-tags").value.split(",").map(t => t.trim()).filter(Boolean),
            album: al || null };
 }
 function tuRefresh() {
@@ -2040,7 +2050,8 @@ function tuRefresh() {
 function tuReset() {
   clearTimeout(tuTimer); TU.pvSeq = (TU.pvSeq || 0) + 1;
   TU.sel = new Set(); TU.names = {}; TU.pv = {}; TU.pvList = []; TU.place = null; TU.showAll = false;
-  $("#tu-name-all").value = ""; $("#tu-when").value = ""; $("#tu-tags").value = ""; $("#tu-album").value = ""; $("#tu-place-all").checked = false;
+  $("#tu-name-all").value = ""; $("#tu-when").value = ""; $("#tu-tags").value = ""; $("#tu-album").value = ""; $("#tu-place-keep").checked = false;
+  $("#tu-place-off").checked = false; $("#tu-find").value = ""; $("#tu-repl").value = "";
 }
 
 $("#tu-crumbs").onclick = (e) => { const b = e.target.closest("[data-f]"); if (!b) return; TU.folder = b.dataset.f; TU.q = ""; $("#tu-q").value = ""; TU.limit = 600; loadTidy(); };
@@ -2071,7 +2082,24 @@ $("#tu-grid").addEventListener("change", (e) => {
 $("#tu-grid").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches("input")) e.target.blur(); });
 $("#tu-tabs").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; TU.tab = b.dataset.t; renderTidyPanel(); };
 ["#tu-name-all", "#tu-when", "#tu-tags"].forEach(sel => $(sel).addEventListener("input", tuRefresh));
-["#tu-album", "#tu-place-all"].forEach(sel => $(sel).addEventListener("change", tuRefresh));
+["#tu-album", "#tu-place-keep", "#tu-place-off"].forEach(sel => $(sel).addEventListener("change", tuRefresh));
+$("#tu-place-off").addEventListener("change", (e) => { if (e.target.checked) TU.place = null; });
+$("#tu-find").addEventListener("input", renderTidyPanel);
+// find & replace inside the name part of every selected photo
+$("#tu-fr-go").onclick = () => {
+  const find = $("#tu-find").value.trim(), repl = $("#tu-repl").value;
+  if (!find) return;
+  const rx = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  let changed = 0;
+  for (const id of TU.sel) {
+    const p = TU.info[id]; if (!p) continue;
+    const cur = TU.names[id] !== undefined ? TU.names[id] : ((TU.pv[id] || p).np || "");
+    const next = cur.replace(rx, repl).replace(/\s+/g, " ").trim();
+    if (next !== cur) { TU.names[id] = next; changed++; }
+  }
+  $("#tu-fr-note").textContent = changed ? `Changed ${plural(changed, "name")} — check the preview, then Save Changes.` : `No selected names contain “${find}”.`;
+  renderTidy(); tuRefresh();
+};
 $("#tu-place").onclick = () => openPicker([], "Location for the selected photos", null, TU.place ? TU.place.label : "", (c) => { TU.place = c; tuRefresh(); });
 $("#tu-place-clear").onclick = () => { TU.place = null; tuRefresh(); };
 $("#tu-prev-more").onclick = () => { TU.showAll = !TU.showAll; renderTidyPanel(); };

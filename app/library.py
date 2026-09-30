@@ -578,6 +578,18 @@ def fold(text):
     return "".join(c for c in t if not unicodedata.combining(c)).lower().strip()
 
 
+def named_after_place(r):
+    """True when a photo's name is just its town or place (so it should change with the location)."""
+    t = (r.get("title") or "").strip().lower()
+    if not t:
+        return False
+    for x in (r.get("city"), r.get("place"), (r.get("place") or "").split(",")[0]):
+        x = (x or "").strip().lower()
+        if x and (t == x or t == x.replace("near ", "", 1)):
+            return True
+    return False
+
+
 def fmt_bytes(n):
     n = float(n or 0)
     for unit in ("bytes", "KB", "MB", "GB", "TB"):
@@ -2932,11 +2944,36 @@ class Library:
         if self.geo.load():
             place = self.geo.label_with(name, lat, lon) if name else self.geo.label(lat, lon)
         place = place or label or name
-        self.x("UPDATE files SET lat=?, lon=?, place=?, city=NULL, gps_source='manual', gps_pending=1, loc_skip=0 WHERE id=?",
-               [(lat, lon, place, int(i)) for i in ids], many=True)
+        ids = [int(i) for i in ids]
+        old = {r["id"]: r for r in self.q("SELECT id, title, city, place FROM files WHERE id IN (%s)"
+                                          % ",".join("?" * len(ids)), ids)} if ids else {}
+        self.x("""UPDATE files SET lat=?, lon=?, place=?, city=NULL, gps_source='manual', gps_pending=1, loc_skip=0,
+                  place_id=NULL, gps_precision='exact', gps_radius=NULL WHERE id=?""",
+               [(lat, lon, place, i) for i in ids], many=True)
         self._fill_places()
+        # a photo named after the town it was in follows the new place (e.g. "Tahoma" -> "Port Elizabeth")
+        new_city = self.geo.city(lat, lon) if self.geo.grid is not None else None
+        new_name = name or (new_city if new_city and new_city != "At sea" and not new_city.startswith("Near ") else None)
+        if new_name:
+            fix = [(new_name, i) for i, r in old.items() if named_after_place(r)]
+            if fix:
+                self.x("UPDATE files SET title=? WHERE id=?", fix, many=True)
         self.invalidate()
         return {"updated": len(ids), "place": place}
+
+    def clear_location(self, ids):
+        """Take the location off photos (e.g. a wrong one) — it's removed from the files too."""
+        ids = [int(i) for i in ids]
+        ids += self.companions(ids)
+        old = {r["id"]: r for r in self.q("SELECT id, title, city, place FROM files WHERE id IN (%s)"
+                                          % ",".join("?" * len(ids)), ids)} if ids else {}
+        self.x("""UPDATE files SET lat=NULL, lon=NULL, place=NULL, city=NULL, gps_source=NULL, gps_pending=1,
+                  place_id=NULL, gps_precision=NULL, gps_radius=NULL WHERE id=?""", [(i,) for i in ids], many=True)
+        fix = [(i,) for i, r in old.items() if named_after_place(r)]
+        if fix:   # the town name came from the wrong location — drop it
+            self.x("UPDATE files SET title=NULL WHERE id=?", fix, many=True)
+        self.invalidate()
+        return {"updated": len(ids)}
 
     # ---------- Places page: saved places, map points, batch geotagging ----------
     def my_places(self):
@@ -3475,7 +3512,7 @@ class Library:
             name, suffix = rest, ""
         return {"prefix": prefix, "np": name, "suffix": suffix, "ext": ext, "new": new, "folder_new": os.path.dirname(new)}
 
-    def _tidy_rows(self, ids, title=None, names=None, shift=0, place=None, replace_place=False):
+    def _tidy_rows(self, ids, title=None, names=None, shift=0, place=None, replace_place=False, remove_place=False):
         """The selected photos as they would be after the edits (nothing is saved)."""
         ids = [int(i) for i in ids]
         names = {int(k): v for k, v in (names or {}).items()}
@@ -3493,20 +3530,29 @@ class Library:
                 r["taken"] = t.strftime("%Y-%m-%dT%H:%M:%S")
                 if r["date_source"] not in NO_TIME:
                     r["date_source"] = "manual"
-            if place and (replace_place or r["lat"] is None):
+            renamed = r["id"] in names or title is not None
+            if remove_place and r["lat"] is not None:
+                if not renamed and named_after_place(r):
+                    r["title"] = None
+                r["lat"] = r["lon"] = r["city"] = r["place"] = None
+            elif place and (replace_place or r["lat"] is None):
                 key = (round(place["lat"], 4), round(place["lon"], 4))
                 if key not in city_cache:
                     self.geo.load()
                     city_cache[key] = self.geo.city(place["lat"], place["lon"]) if self.geo.grid is not None else None
+                new_name = place.get("name") or (city_cache[key] if city_cache[key] and city_cache[key] != "At sea"
+                                                 and not city_cache[key].startswith("Near ") else None)
+                if not renamed and new_name and named_after_place(r):
+                    r["title"] = new_name
                 r["lat"], r["lon"] = place["lat"], place["lon"]
                 r["city"] = city_cache[key] or place.get("name")
                 r["place"] = place.get("label") or place.get("name")
             out.append(r)
         return out
 
-    def tidy_preview(self, ids, title=None, names=None, shift=0, place=None, replace_place=False):
+    def tidy_preview(self, ids, title=None, names=None, shift=0, place=None, replace_place=False, remove_place=False):
         s = self.settings()
-        rows = [r for r in self._tidy_rows(ids, title, names, shift, place, replace_place)
+        rows = [r for r in self._tidy_rows(ids, title, names, shift, place, replace_place, remove_place)
                 if r["date_source"] not in NEEDS_DATE + NEEDS_TIME]
         sel = set(r["id"] for r in rows)
         # trips stay together in the month they began (counting photos not selected that share the name)
@@ -3582,7 +3628,7 @@ class Library:
         return {"items": out, "waiting": waiting}
 
     def tidy_save(self, job, ids, title=None, names=None, shift=0, place=None, replace_place=False,
-                  tags=None, album=None):
+                  tags=None, album=None, remove_place=False):
         ids = [int(i) for i in ids]
         names = {int(k): v for k, v in (names or {}).items()}
         job.step("Saving your changes")
@@ -3602,7 +3648,9 @@ class Library:
                                              % (",".join("?" * len(ids)), NEEDS_SQL), ids)]
             if dated:
                 self.edit(dated, shift=int(shift))
-        if place:
+        if remove_place:
+            self.clear_location(ids)
+        elif place:
             targets = ids if replace_place else [r["id"] for r in self.q(
                 "SELECT id FROM files WHERE lat IS NULL AND id IN (%s)" % ",".join("?" * len(ids)), ids)]
             if targets:
@@ -3767,6 +3815,11 @@ class Library:
         for c in writes:
             r = self.get(c["id"])
             args = []
+            if c["gps"] and r["lat"] is None:   # location taken off
+                args += ["-GPS:all=", "-XMP-exif:GPSLatitude=", "-XMP-exif:GPSLongitude=", "-XMP-photoshop:City=",
+                         "-XMP-photoshop:State=", "-XMP-photoshop:Country=", "-XMP-iptcCore:Location="]
+                if r["kind"] == "video":
+                    args += ["-Keys:GPSCoordinates=", "-UserData:GPSCoordinates="]
             if c["gps"] and r["lat"] is not None:
                 if r["kind"] == "video":
                     coords = "%.6f, %.6f, 0" % (r["lat"], r["lon"])

@@ -618,7 +618,8 @@ def tidy_browse():
 
 def _tidy_args(b):
     return dict(title=b.get("title"), names=b.get("names"), shift=int(b.get("shift") or 0),
-                place=b.get("place"), replace_place=bool(b.get("replace_place")))
+                place=b.get("place"), replace_place=bool(b.get("replace_place")),
+                remove_place=bool(b.get("remove_place")))
 
 
 @app.route("/api/tidy/preview", methods=["POST"])

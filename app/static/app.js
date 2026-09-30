@@ -1267,9 +1267,9 @@ $("#dupe-list").onclick = async (e) => {
 $("#dupe-list").ondblclick = (e) => { const card = e.target.closest(".card"); if (card && e.target.closest(".dup")) openCompare(card.dataset.key); };
 
 /* compare look-alikes large, side by side, zooming into the same spot in each */
-const CMP = { key: null, zoom: false };
+const CMP = { key: null, zoom: false, mode: "side", cur: 0, origin: "50% 50%" };
 function openCompare(key) {
-  CMP.key = key; CMP.zoom = false;
+  CMP.key = key; CMP.zoom = false; CMP.cur = 0;
   $("#cmp").hidden = false; $("#cmp").classList.remove("zoomed");
   renderCompare();
 }
@@ -1279,9 +1279,19 @@ function renderCompare() {
   const i = D.groups.indexOf(g);
   $("#cmp-title").textContent = `${g.kind === "exact" ? "Exact copies" : "Look-alikes"} · ${plural(g.files.length, "file")} · ${fmtWhen(g.taken)} · group ${i + 1} of ${D.groups.length}`;
   $("#cmp-prev").disabled = i === 0; $("#cmp-next").disabled = i === D.groups.length - 1;
-  $("#cmp-body").innerHTML = g.files.map(f => {
+  const flip = CMP.mode === "flip";
+  CMP.cur = Math.min(CMP.cur, g.files.length - 1);
+  $("#cmp").classList.toggle("flip", flip);
+  $$("#cmp-mode button").forEach(b => b.classList.toggle("on", b.dataset.v === CMP.mode));
+  $("#cmp-hint").textContent = flip
+    ? "Press Space (or click the picture) to flip between them in the same spot · Z to zoom · Keep / Set aside to choose"
+    : "Click a picture to zoom in on the same spot in all of them · click Keep / Set aside to choose";
+  $("#cmp-tabs").hidden = !flip;
+  $("#cmp-tabs").innerHTML = g.files.map((f, k) => `<button data-cur="${k}" class="${k === CMP.cur ? "on" : ""}">Photo ${k + 1}
+    <span class="k ${D.choice[g.key][f.id] ? "keep" : "aside"}">${D.choice[g.key][f.id] ? "Keep" : "Set aside"}</span></button>`).join("");
+  $("#cmp-body").innerHTML = g.files.map((f, k) => {
     const keep = D.choice[g.key][f.id];
-    return `<div class="cmp-p ${keep ? "keep" : "aside"}" data-id="${f.id}">
+    return `<div class="cmp-p ${keep ? "keep" : "aside"} ${k === CMP.cur ? "cur" : ""}" data-id="${f.id}">
       <div class="cmp-img"><img src="/media/${f.id}" alt="" onerror="this.src='/thumb/${f.id}'"></div>
       <div class="cmp-info"><div class="grow"><b>${esc(f.name)}</b><br>
         <span class="muted">${[f.width ? `${f.width}×${f.height}` : "", fmtSize(f.size)].filter(Boolean).join(" · ")}${f.id === g.keep ? ` · <span class="best">best copy</span>` : ""}</span><br>
@@ -1290,6 +1300,19 @@ function renderCompare() {
     </div>`;
   }).join("");
 }
+function cmpApplyZoom() {
+  $$("#cmp-body .cmp-img img").forEach(im => {
+    im.style.transformOrigin = CMP.origin;
+    im.style.transform = CMP.zoom ? "scale(3)" : "";
+  });
+  $("#cmp").classList.toggle("zoomed", CMP.zoom);
+}
+function cmpFlip(to) {
+  const g = D.groups.find(x => x.key === CMP.key); if (!g) return;
+  CMP.cur = to != null ? to : (CMP.cur + 1) % g.files.length;
+  $$("#cmp-body .cmp-p").forEach((p, k) => p.classList.toggle("cur", k === CMP.cur));
+  $$("#cmp-tabs button").forEach((b, k) => b.classList.toggle("on", k === CMP.cur));
+}
 function closeCompare() { $("#cmp").hidden = true; $("#cmp-body").innerHTML = ""; if (D.groups.length) renderDupes(); }
 $("#cmp-body").onclick = (e) => {
   const p = e.target.closest(".cmp-p"); if (!p) return;
@@ -1297,21 +1320,30 @@ $("#cmp-body").onclick = (e) => {
   if (e.target.closest("[data-toggle]")) {
     const id = +p.dataset.id;
     D.choice[g.key][id] = !D.choice[g.key][id];
-    return renderCompare();
+    renderCompare(); return cmpApplyZoom();
   }
   const box = e.target.closest(".cmp-img"); if (!box) return;
-  CMP.zoom = !CMP.zoom;
-  $("#cmp").classList.toggle("zoomed", CMP.zoom);
-  const img = box.querySelector("img"), r = img.getBoundingClientRect();
-  const ox = ((e.clientX - r.left) / r.width) * 100, oy = ((e.clientY - r.top) / r.height) * 100;
-  $$("#cmp-body .cmp-img img").forEach(im => {   // same spot in every copy, to compare sharpness
-    im.style.transformOrigin = `${ox}% ${oy}%`;
-    im.style.transform = CMP.zoom ? "scale(3)" : "";
-  });
+  if (CMP.mode === "flip" && !e.altKey) return cmpFlip();   // flip mode: a click switches photos
+  cmpZoomAt(box, e.clientX, e.clientY);
 };
+function cmpZoomAt(box, x, y) {
+  CMP.zoom = !CMP.zoom;
+  const img = box.querySelector("img"), r = img.getBoundingClientRect();
+  if (x != null && r.width) CMP.origin = `${((x - r.left) / r.width) * 100}% ${((y - r.top) / r.height) * 100}%`;
+  cmpApplyZoom();   // same spot in every copy, to compare sharpness
+}
+$("#cmp-body").ondblclick = (e) => {
+  const box = e.target.closest(".cmp-img");
+  if (box && CMP.mode === "flip") cmpZoomAt(box, e.clientX, e.clientY);   // double-click zooms in flip mode (its two clicks flip there and back)
+};
+$("#cmp-mode").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  CMP.mode = b.dataset.v; renderCompare(); cmpApplyZoom();
+};
+$("#cmp-tabs").onclick = (e) => { const b = e.target.closest("[data-cur]"); if (b) cmpFlip(+b.dataset.cur); };
 $("#cmp-x").onclick = closeCompare;
-$("#cmp-prev").onclick = () => { const i = D.groups.findIndex(x => x.key === CMP.key); if (i > 0) { CMP.key = D.groups[i - 1].key; CMP.zoom = false; $("#cmp").classList.remove("zoomed"); renderCompare(); } };
-$("#cmp-next").onclick = () => { const i = D.groups.findIndex(x => x.key === CMP.key); if (i < D.groups.length - 1) { CMP.key = D.groups[i + 1].key; CMP.zoom = false; $("#cmp").classList.remove("zoomed"); renderCompare(); } };
+$("#cmp-prev").onclick = () => { const i = D.groups.findIndex(x => x.key === CMP.key); if (i > 0) { CMP.key = D.groups[i - 1].key; CMP.zoom = false; CMP.cur = 0; $("#cmp").classList.remove("zoomed"); renderCompare(); } };
+$("#cmp-next").onclick = () => { const i = D.groups.findIndex(x => x.key === CMP.key); if (i < D.groups.length - 1) { CMP.key = D.groups[i + 1].key; CMP.zoom = false; CMP.cur = 0; $("#cmp").classList.remove("zoomed"); renderCompare(); } };
 async function cmpResolve(all) {
   const g = D.groups.find(x => x.key === CMP.key); if (!g) return;
   let keep = g.files.filter(f => D.choice[g.key][f.id]).map(f => f.id);
@@ -1334,6 +1366,11 @@ $("#cmp-all").onclick = () => cmpResolve(true);
 document.addEventListener("keydown", (e) => {
   if ($("#cmp").hidden) return;
   if (e.key === "Escape") closeCompare();
+  else if (e.key === " " || e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    if (CMP.mode !== "flip") { CMP.mode = "flip"; renderCompare(); cmpApplyZoom(); } else cmpFlip();
+  }
+  else if (e.key === "z" || e.key === "Z") { const box = $("#cmp-body .cmp-p.cur .cmp-img") || $("#cmp-body .cmp-img"); if (box) cmpZoomAt(box); }
   else if (e.key === "ArrowRight") $("#cmp-next").click();
   else if (e.key === "ArrowLeft") $("#cmp-prev").click();
 });

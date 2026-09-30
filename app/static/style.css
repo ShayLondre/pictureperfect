@@ -940,3 +940,16 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
 .cmp-foot .spacer { flex: 1; }
 .cmp-foot .ghost { background: rgba(255,255,255,.08); color: #eee; border-color: rgba(255,255,255,.15); }
 .cmp-foot .dark { background: #fff; color: #111; padding: 9px 26px; }
+.cmp-tr { display: flex; align-items: center; gap: 14px; }
+.cmp-mode { background: rgba(255,255,255,.1); }
+.cmp-mode button { color: #bbb; }
+.cmp-mode button.on { background: #fff; color: #111; }
+.cmp-tabs { display: flex; justify-content: center; gap: 8px; padding: 0 16px 10px; }
+.cmp-tabs button { padding: 7px 16px; border-radius: 9px; background: rgba(255,255,255,.08); color: #ddd; font-size: 13px;
+  border: 2px solid transparent; }
+.cmp-tabs button.on { border-color: #fff; color: #fff; background: rgba(255,255,255,.16); }
+.cmp-tabs .k { font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 5px; }
+.cmp-tabs .k.keep { background: #4f8fe6; color: #fff; }
+.cmp-tabs .k.aside { background: #b0543a; color: #fff; }
+.cmp.flip .cmp-p { display: none; }
+.cmp.flip .cmp-p.cur { display: flex; }

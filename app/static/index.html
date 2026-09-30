@@ -626,9 +626,13 @@
 <!-- Duplicates: the look-alikes side by side, large -->
 <div id="cmp" class="cmp" hidden>
   <div class="cmp-top">
-    <div><b id="cmp-title"></b> <span class="muted small" id="cmp-hint">Click a picture to zoom in on the same spot in all of them · click Keep / Set aside to choose</span></div>
-    <button class="cmp-x" id="cmp-x" aria-label="Close">×</button>
+    <div><b id="cmp-title"></b> <span class="muted small" id="cmp-hint"></span></div>
+    <div class="cmp-tr">
+      <div class="seg cmp-mode" id="cmp-mode"><button data-v="side" class="on">Side by side</button><button data-v="flip">Flip</button></div>
+      <button class="cmp-x" id="cmp-x" aria-label="Close">×</button>
+    </div>
   </div>
+  <div class="cmp-tabs" id="cmp-tabs" hidden></div>
   <div class="cmp-body" id="cmp-body"></div>
   <div class="cmp-foot">
     <button class="ghost" id="cmp-prev">‹ Previous group</button>

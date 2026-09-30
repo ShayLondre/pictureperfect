@@ -737,6 +737,62 @@ class Taste:
         return 1.0 / (1.0 + math.exp(-max(-30, min(30, z))))
 
 
+
+def _trash_dir_for(path):
+    """The Trash folder macOS uses for files on this path's drive."""
+    mount = os.path.abspath(path)
+    while not os.path.ismount(mount):
+        mount = os.path.dirname(mount)
+    if mount == "/":
+        d = os.path.expanduser("~/.Trash")
+    else:
+        d = os.path.join(mount, ".Trashes", str(os.getuid()))
+    try:
+        os.makedirs(d, exist_ok=True)
+        return d
+    except OSError:
+        return None
+
+
+def trash_files(files):
+    """Move files to the Mac Trash quickly. Uses macOS's own trash call when available,
+    otherwise moves them into the drive's Trash folder, and only as a last resort asks Finder."""
+    if not IS_MAC or not files:
+        return
+    left = list(files)
+    try:
+        from Foundation import NSFileManager, NSURL
+        fm = NSFileManager.defaultManager()
+        for f in left:
+            try:
+                fm.trashItemAtURL_resultingItemURL_error_(NSURL.fileURLWithPath_(f), None, None)
+            except Exception:
+                pass
+        left = [f for f in left if os.path.exists(f)]
+    except ImportError:
+        pass
+    for f in list(left):
+        d = _trash_dir_for(f)
+        if not d:
+            continue
+        base, ext = os.path.splitext(os.path.basename(f))
+        dest, n = os.path.join(d, base + ext), 2
+        while os.path.exists(dest):
+            dest, n = os.path.join(d, "%s %d%s" % (base, n, ext)), n + 1
+        try:
+            os.rename(f, dest)
+        except OSError:
+            pass
+    left = [f for f in left if os.path.exists(f)]
+    for k in range(0, len(left), 40):
+        items = ", ".join('POSIX file "%s"' % f.replace("\\", "\\\\").replace('"', '\\"') for f in left[k:k + 40])
+        try:
+            subprocess.run(["osascript", "-e", 'tell application "Finder" to delete {%s}' % items],
+                           capture_output=True, timeout=300)
+        except Exception:
+            pass
+
+
 class Job:
     def __init__(self, name):
         self.name = name
@@ -1727,14 +1783,16 @@ class Library:
         return result
 
     def _trash(self, rows, job=None):
-        """Send files to the Mac Trash (recoverable with Put Back). Anything that can't be
+        """Send files to the Mac Trash (recoverable from the Trash). Anything that can't be
         trashed goes to _Set aside instead, so nothing is ever lost by accident."""
         rows = list(rows) + [c for c in (self.get(i) for i in self.companions([r["id"] for r in rows]))
                              if c and c["status"] == "active"]
+        if job:
+            job.total = len(rows)
         trashed = aside = 0
-        dirs = set()
-        for k in range(0, len(rows), 40):
-            chunk = rows[k:k + 40]
+        dirs, gone = set(), []
+        for k in range(0, len(rows), 200):
+            chunk = rows[k:k + 200]
             files = []
             for r in chunk:
                 full = self.full(r["path"])
@@ -1743,20 +1801,11 @@ class Library:
                     side = find_sidecar(full)
                     if side:
                         files.append(side)
-            ok = False
-            if IS_MAC and files:
-                items = ", ".join('POSIX file "%s"' % f.replace("\\", "\\\\").replace('"', '\\"') for f in files)
-                script = 'tell application "Finder" to delete {%s}' % items
-                try:
-                    res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
-                    ok = res.returncode == 0
-                except Exception:
-                    ok = False
+            trash_files(files)
             for r in chunk:
                 full = self.full(r["path"])
                 if not os.path.exists(full):
-                    self.x("DELETE FROM files WHERE id=?", (r["id"],))
-                    self._drop_thumb(r["id"])
+                    gone.append(r["id"])
                     dirs.add(os.path.dirname(full))
                     trashed += 1
                 else:
@@ -1764,10 +1813,14 @@ class Library:
                     aside += 1
                 if job:
                     job.done += 1
+            if gone:   # one save per batch, not per photo — much faster on exFAT
+                self.x("DELETE FROM files WHERE id=?", [(i,) for i in gone], many=True)
+                for i in gone:
+                    self._drop_thumb(i)
+                gone = []
         self._remove_empty_dirs(dirs)
         return trashed, aside
 
-    # ---------- learning your taste from keep / skip choices ----------
     def record_picks(self, items, include):
         want = set(int(i) for i in include)
         rows = []
@@ -1984,19 +2037,13 @@ class Library:
         if not IS_MAC:
             return 0
         done = 0
-        for k in range(0, len(paths), 40):
-            chunk = [f for f in paths[k:k + 40] if os.path.exists(f)]
-            if not chunk:
-                continue
-            items = ", ".join('POSIX file "%s"' % f.replace("\\", "\\\\").replace('"', '\\"') for f in chunk)
-            try:
-                subprocess.run(["osascript", "-e", 'tell application "Finder" to delete {%s}' % items],
-                               capture_output=True, timeout=300)
-            except Exception:
-                pass
-            done += sum(1 for f in chunk if not os.path.exists(f))
+        for k in range(0, len(paths), 200):
+            chunk = [f for f in paths[k:k + 200] if os.path.exists(f)]
+            if chunk:
+                trash_files(chunk)
+                done += sum(1 for f in chunk if not os.path.exists(f))
             if job:
-                job.done += len(chunk)
+                job.done += len(paths[k:k + 200])
         return done
 
     # ======================================================================= #

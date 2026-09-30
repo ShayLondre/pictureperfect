@@ -36,5 +36,15 @@ cp "$TMP/package/dist/leaflet.js" "$TMP/package/dist/leaflet.css" "$TMP/package/
 cp -R "$TMP/package/dist/images" "$L/images"
 ls -la "$L"
 
+echo "Offline maps (map engine, world map, fonts, place search)…"
+gh release download map-assets -R "${GITHUB_REPOSITORY:-ShayLondre/pictureperfect}" --pattern map-assets.zip --dir "$TMP" --clobber
+mkdir -p "$TMP/ma" && unzip -q -o "$TMP/map-assets.zip" -d "$TMP/ma"
+rm -rf app/static/vendor/map && mkdir -p app/static/vendor && cp -R "$TMP/ma/vendor/map" app/static/vendor/map
+mkdir -p "$X/maps" "$X/bin"
+cp "$TMP/ma/maps/world.pmtiles" "$X/maps/"
+cp "$TMP/ma/geo/features.tsv.gz" "$TMP/ma/geo/admin2Codes.txt.gz" "$X/geo/"
+cp "$TMP/ma/bin/pmtiles" "$X/bin/pmtiles" && chmod +x "$X/bin/pmtiles"
+ls -la "$X/maps" "$X/bin" app/static/vendor/map
+
 echo "Icon…"
 python3 packaging/make_icon.py "$X/icon.icns"

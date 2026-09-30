@@ -7,7 +7,7 @@ EXTRA = os.path.join(ROOT, "build_extra")
 VERSION = os.environ.get("APP_VERSION", "1.0.0")
 
 datas = [(os.path.join(ROOT, "app", "static"), "static")]
-for name in ("exiftool", "models", "geo"):
+for name in ("exiftool", "models", "geo", "maps", "bin"):
     p = os.path.join(EXTRA, name)
     if os.path.isdir(p):
         datas.append((p, name))

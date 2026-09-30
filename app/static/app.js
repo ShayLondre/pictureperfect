@@ -1252,7 +1252,16 @@ async function loadMapLibs() {
 
 function mapStyle(info) {
   const origin = location.origin;
-  const flavor = basemaps.namedFlavor("light");
+  // a calm, photo-first palette on top of the Protomaps "light" style
+  const flavor = Object.assign({}, basemaps.namedFlavor("light"), {
+    background: "#eef0ea", earth: "#eef0ea", water: "#a6c8da", ocean_label: "#557a92",
+    park_a: "#dde8d6", park_b: "#cfe2c8", wood_a: "#d8e5d2", wood_b: "#c7dcc0", scrub_a: "#e1e9d8", scrub_b: "#d3e2cc",
+    sand: "#efeadb", beach: "#f1ebd6", glacier: "#f7f7f5", buildings: "#d9d5ce", hospital: "#ebe5e2", school: "#ebe7e0",
+    industrial: "#e3e5e3", aerodrome: "#e4e5e5", zoo: "#dde6db", pedestrian: "#ecebe4", military: "#e6e6e3",
+    boundaries: "#b9b6b0", city_label: "#4d5452", state_label: "#a9aca8", country_label: "#8f9491",
+  });
+  flavor.landcover = { grassland: "#e3ebd9", barren: "#efece2", urban_area: "#e8e7e2", farmland: "#e7ecdc",
+    glacier: "#f8f8f6", scrub: "#e4eada", forest: "#d6e4d1" };
   const style = { version: 8, glyphs: origin + "/static/vendor/map/fonts/{fontstack}/{range}.pbf",
     sprite: origin + "/static/vendor/map/sprites/light", sources: {}, layers: [] };
   const maps = [];
@@ -1370,6 +1379,7 @@ function renderMine() {
   PL.mineMarkers.forEach(m => m.remove()); PL.mineMarkers = [];
   if (!PL.mapReady) return;
   for (const p of PL.mine) {
+    if (p.id === PL.placeId && PL.pin) continue;   // the pin already shows this one
     const el = document.createElement("div");
     el.className = "pl-mine";
     el.innerHTML = `<i>${p.starred ? "★" : "◆"}</i>${esc(p.name)}`;
@@ -1383,6 +1393,7 @@ function fmtLatLon(lat, lon) {
 }
 
 async function loadPlaces() {
+  api("/api/places/warm", {}).catch(() => {});
   const [mine, pts] = await Promise.all([api("/api/places/mine").catch(() => []), api("/api/places/points").catch(() => [])]);
   PL.mine = mine; PL.points = pts;
   await plLoadPhotos();
@@ -1493,7 +1504,7 @@ async function plSetPin(lat, lon, opts = {}) {
   if (opts.prec) plSetPrec(opts.prec);
   if (opts.radius) $("#pl-radius").value = String(opts.radius);
   if (opts.name !== undefined) $("#pl-name").value = opts.name;
-  if (!opts.keepPlace) { PL.placeId = null; $("#pl-del-place").hidden = true; }
+  if (!opts.keepPlace && PL.placeId) { PL.placeId = null; $("#pl-del-place").hidden = true; renderMine(); }
   plShowPin();
   renderInsp();
   try { PL.info = await api(`/api/places/details?lat=${lat}&lon=${lon}`); } catch (e) { PL.info = null; }
@@ -1591,7 +1602,7 @@ function plUseMine(p, fly) {
   $("#pl-name").value = p.name; $("#pl-type").value = p.type || ""; $("#pl-notes").value = p.notes || "";
   PL.tags = [...(p.tags || [])]; PL.starred = !!p.starred;
   plSetPin(p.lat, p.lon, { prec: p.precision || "exact", radius: p.radius, keepPlace: true });
-  PL.placeId = p.id; $("#pl-del-place").hidden = false;
+  PL.placeId = p.id; $("#pl-del-place").hidden = false; renderMine();
   if (fly && PL.map) PL.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(PL.map.getZoom(), 15) });
 }
 
@@ -1602,7 +1613,7 @@ $("#pl-save-place").onclick = async () => {
       precision: PL.prec, radius: PL.prec === "exact" ? null : +$("#pl-radius").value, type: $("#pl-type").value,
       tags: PL.tags, notes: $("#pl-notes").value, starred: PL.starred, cover_id: [...PL.sel][0] || null });
     PL.placeId = p.id; $("#pl-del-place").hidden = false;
-    PL.mine = await api("/api/places/mine"); renderMine();
+    PL.mine = await api("/api/places/mine"); renderMine(); plShowPin();
     toast(`Saved “${p.name}” to My Places.`);
   } catch (e) { fail(e); }
 };
@@ -1862,6 +1873,10 @@ const TU_FOLDER_NOTE = {
   none: "No folders — every photo together, sorted by name.",
 };
 
+$("#tu-to-places").onclick = () => {
+  if (!TU.sel.size) return toast("Select some photos first.");
+  openPlaces([...TU.sel]);
+};
 $("#tu-more").onclick = () => { TU.limit = (TU.limit || 600) + 600; loadTidy(); };
 async function loadTidy() {
   let r;

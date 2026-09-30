@@ -78,7 +78,7 @@ with zipfile.ZipFile(all_zip) as z:
             cc = p[8]
             elev = p[15] or (p[16] if p[16] not in ("", "-9999") else "")
             pop = int(p[14] or 0)
-            imp = pop + WEIGHT.get(p[7], 20000 if gid in wiki else 0)
+            imp = pop + WEIGHT.get(p[7], 0) + (50000 if gid in wiki else 0)
             rows.append((imp, "\t".join([nm, alt, str(lat), str(lon), p[7], admin1.get(cc + "." + p[10], ""),
                                           countries.get(cc, cc), str(pop), elev])))
 rows.sort(key=lambda r: -r[0])   # most important first, so a search finds them first

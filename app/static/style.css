@@ -755,8 +755,9 @@ main { padding: 28px 34px; }
 #im-adv .opt input[type=checkbox] { flex: none; margin-top: 1px; }
 
 /* ---------------------------------------------------------------- Places: map, filmstrip, inspector */
-main:has(> #v-locations:not([hidden])) { padding: 16px 20px; }
-.pl-view { display: flex; flex-direction: column; gap: 14px; height: calc(100vh - 32px); min-height: 560px; }
+.main-col:has(#v-locations:not([hidden])) { height: 100vh; display: flex; flex-direction: column; }
+main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height: 0; }
+.pl-view { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 520px; }
 .pl-top { display: flex; align-items: center; gap: 14px; }
 .pl-search { position: relative; flex: 0 1 440px; display: flex; align-items: center; gap: 8px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; height: 42px; }
@@ -801,7 +802,9 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; }
   padding: 2px 7px; border-radius: 5px; pointer-events: none; font-variant-numeric: tabular-nums; }
 .pl-coords:empty { display: none; }
 .pl-strip { border-top: 1px solid var(--line); padding: 10px 12px 12px; background: var(--panel); }
-.pl-strip-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.pl-strip-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; min-width: 0; }
+.pl-strip-head #pl-hint { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.pl-strip-head #pl-count, .pl-strip-head .link, .pl-strip-head .seg { flex: none; white-space: nowrap; }
 .pl-strip-head .grow { flex: 1; }
 .seg.small button { font-size: 13px; padding: 4px 10px; }
 .pl-film { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scroll-behavior: smooth; min-height: 110px; }

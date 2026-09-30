@@ -826,10 +826,7 @@ class Geo:
         out["country"], out["state"] = e[4] or None, e[3] or None
         if len(e) > 9 and e[9]:
             out["region"] = self._admin2().get("%s.%s.%s" % (e[7], e[8], e[9]))
-        m, md = self.main_place(lat, lon, radius=25)
-        if m is None:
-            m, md = e, d
-        out["city"], out["city_km"] = m[2], round(md, 1)
+        out["city"], out["city_km"] = e[2], round(d, 1)
         return out
 
     def _features(self):
@@ -899,7 +896,7 @@ class Geo:
                 return 2
             return None
         for r, k, h in self._feature_hits(ql):
-            hits.append((r, -h.pop("imp"), h))
+            hits.append((r, -h.pop("imp") - (200000 - min(k, 200000)) * 0.001, h))   # earlier rows are better known
         if self.names is not None:
             folded = getattr(self, "_names_folded", None)
             if folded is None or len(folded) != len(self.names):
@@ -921,6 +918,12 @@ class Geo:
             if len(out) >= limit:
                 break
         return out
+
+    def warm_up(self):
+        """Load the offline place list in the background so the first search is quick."""
+        if getattr(self, "_feat", None) is None and not getattr(self, "_warming", False):
+            self._warming = True
+            threading.Thread(target=lambda: (self.load(), self._features()), daemon=True).start()
 
     def search_offline(self, q, limit=8):
         if self.names is None:

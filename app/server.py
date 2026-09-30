@@ -505,6 +505,12 @@ def places_search():
     return jsonify(out[:15])
 
 
+@app.route("/api/places/warm", methods=["POST"])
+def places_warm():
+    lib().geo.warm_up()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/places/details")
 def places_details():
     return jsonify(lib().geo.details(float(request.args["lat"]), float(request.args["lon"])))

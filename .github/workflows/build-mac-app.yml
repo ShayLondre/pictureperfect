@@ -30,7 +30,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r app/requirements.txt -r app/requirements-faces.txt pywebview pyinstaller
 
-      - name: Gather ExifTool, face model, place names and icon
+      - name: Gather ExifTool, face model, place names, maps and icon
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash packaging/fetch_bundled.sh
 
       - name: Build Picture Perfect.app

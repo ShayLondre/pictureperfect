@@ -296,6 +296,12 @@ def set_date_only():
     return jsonify(lib().set_date_only(b["ids"], b["date"]))
 
 
+@app.route("/api/resolve-dates", methods=["POST"])
+def resolve_dates():
+    b = request.json or {}
+    return jsonify(lib().resolve_dates(b["ids"], b.get("use")))
+
+
 @app.route("/api/copy-details", methods=["POST"])
 def copy_details():
     b = request.json or {}

@@ -80,6 +80,7 @@ One folder per month, and inside it one folder per trip or event (photos that sh
 - Everything matches: the date and time in the name, the date saved inside the photo, and the Created / Modified dates Finder shows. Places and tags are saved inside the photo too, so Finder search and Apple Photos can see them.
 - Undo covers names and folders. Locations and dates saved into photos stay (your backup drive has the originals).
 - Nothing gets a made-up date. A photo with no date (or no time) waits in Drive Preview, marked **Date needed**, until you add one — or you can choose "use file date" or "date only". Tidy Up shows how many are waiting and takes you to them.
+- **Dates that don't match:** when a photo's file name says one date (e.g. *2019-03-12 Tobago Cays.jpg*) but the date saved inside it is a different day — often the day it was downloaded, copied or edited — it waits in Drive Preview marked **dates don't match**, showing both. Choose **Use** the file name's date or **Keep** the one inside, one photo at a time or for all selected at once. Differences of less than a day and a half (time zones) are ignored.
 - Works with JPG, HEIC, PNG, TIFF, RAW, and videos (MOV, MP4 and more).
 
 

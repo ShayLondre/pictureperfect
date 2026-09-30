@@ -906,7 +906,7 @@ async function loadFilters() {
     $("#tag-list").innerHTML = (f.tags || []).map(t => `<option value="${esc(t)}">`).join("");
     const sel = $("#f-year"), cur = sel.value;
     sel.innerHTML = `<option value="">Any year</option>` + f.years.map(y => `<option>${y}</option>`).join("") +
-      `<option value="none">Needs a date or time</option>`;
+      `<option value="none">Date needs attention</option>`;
     sel.value = cur;
   } catch (e) { /* ignore */ }
 }
@@ -2137,7 +2137,7 @@ function renderTidy() {
         ${p.raw ? `<span class="tagr">RAW+JPEG</span>` : p.kind === "video" ? `<span class="tagr">Video</span>` : ""}</div>
       <div class="oldn" title="${esc(p.path)}">${esc(p.name)}</div>
       <div class="loc ${p.lat == null ? "none" : ""}" title="${p.lat != null ? esc((p.place || "") + "\n" + fmtLatLon(p.lat, p.lon)) : ""}">${p.lat != null ? "📍 " + esc((p.place || "").split(",")[0].trim() || "Location") + ` · ${fmtLatLon(p.lat, p.lon)}` : "No location"}</div>
-      ${p.needs ? `<div class="note">Needs a date first — add one in Drive Preview</div>`
+      ${p.needs ? `<div class="note">${p.date_alt ? "Dates don't match — pick one in Drive Preview" : "Needs a date first — add one in Drive Preview"}</div>`
         : `<div class="fname ${TU.names[p.id] !== undefined ? "mine" : ""} ${same ? "same" : ""}" title="${same ? "Already has the Picture Perfect name" : esc((v.folder_new || "").split("/").join(" › "))}"><span>${esc(v.prefix)}</span><input data-name value="${esc(np)}" spellcheck="false">${v.suffix ? `<span class="num">${esc(v.suffix)}</span>` : ""}<span>${esc(v.ext)}</span></div>`}
     </div>`;
   }).join("");
@@ -2194,7 +2194,7 @@ function renderTidyPanel() {
     <div class="pvrow ${x.changes ? "" : "same"}"><img src="/thumb/${x.id}" alt="">
       <span class="o" title="${esc(x.old)}">${esc(fileOf(x.old))}</span><span class="a">→</span>
       <span class="nw" title="${esc(x.new)}">${esc(fileOf(x.new))}</span></div>`).join("") || `<div class="hint">Working it out…</div>`) +
-    (TU.waiting ? `<div class="hint warnrow">${plural(TU.waiting, "photo")} without a date will be left as they are.</div>` : "");
+    (TU.waiting ? `<div class="hint warnrow">${plural(TU.waiting, "photo")} without a date (or with two dates that don't match) will be left as they are.</div>` : "");
   $("#tu-prev-more").hidden = L2.length <= 8;
   $("#tu-prev-more").textContent = TU.showAll ? "Show fewer" : `Show all ${n(L2.length)} files…`;
 }
@@ -2334,7 +2334,7 @@ async function loadReview() {
     : R.mode === "day" || R.mode === "set"
     ? "Tick the ones you want (all are ticked), use Name… to name them together, then Save changes."
     : `${plural(count, "new photo")} copied to ${S.state.library.split("/").filter(Boolean).slice(-1)[0]} › _Drive Preview, still with their old names. Check what each will be renamed to, fix anything, then press Save & file.` +
-      (waiting ? ` ${plural(waiting, "photo needs", "photos need")} a date or time first.` : "");
+      (waiting ? ` ${plural(waiting, "photo needs", "photos need")} a date, a time or a date check first.` : "");
   $("#rv-empty").hidden = count > 0;
   const jf = R.mode === "inbox" && R.justFiled && R.justFiled.length && !(S.state.job && !S.state.job.finished);
   $("#rv-prune").hidden = !jf;
@@ -2372,6 +2372,7 @@ function rvRow(it) {
   const pills = [
     it.needs === "date" ? `<span class="pill warn">no date — add one to file it</span>` : "",
     it.needs === "time" ? `<span class="pill warn">no time — add one, or keep date only</span>` : "",
+    it.needs === "check" ? `<span class="pill warn">dates don't match — pick one to file it</span>` : "",
     it.dupe ? `<span class="pill warn">looks like a duplicate</span>` : "",
     it.pending && !it.needs ? `<span class="pill ok">changes not saved to photo yet</span>` : "",
   ].join("");
@@ -2382,11 +2383,12 @@ function rvRow(it) {
       <div class="nowname">Now: <b>${esc(it.name)}</b>${it.raw ? " + " + esc(it.raw) : ""} <span class="muted">in ${esc(folderOf(it.path) || "top of drive")}</span></div>
       <div class="willbe">Will be renamed to:</div>
       <div class="nm">
-        <span class="fixed">${it.needs === "date" ? `<span class="needs">Date needed</span>` : esc(p.fixed.slice(0, 10))}${it.needs === "time" ? ` <span class="needs">time?</span>` : it.needs ? "" : esc(p.fixed.slice(10))}</span>
+        <span class="fixed">${it.needs === "date" ? `<span class="needs">Date needed</span>` : it.needs === "check" ? `<span class="needs">Which date?</span>` : esc(p.fixed.slice(0, 10))}${it.needs === "time" ? ` <span class="needs">time?</span>` : it.needs ? "" : esc(p.fixed.slice(10))}</span>
         <input data-f="title" value="${esc(it.name_part || "")}" placeholder="${esc(it.default_name || "Add a place or event")}" aria-label="Name">
         <span class="ext">${esc(p.ext)}</span>
       </div>
-      <div class="dest">${it.needs === "date" ? "Gets its name and folder once it has a date" : p.folder ? "📁 Goes in folder " + esc(folderOf(it.new)) : "Stays at the top of the drive"}</div>
+      <div class="dest">${it.needs === "date" ? "Gets its name and folder once it has a date" : it.needs === "check" ? "Gets its name and folder once you pick the right date" : p.folder ? "📁 Goes in folder " + esc(folderOf(it.new)) : "Stays at the top of the drive"}</div>
+      ${it.needs === "check" ? clashHtml(it) : ""}
       <div class="fields">
         <label>Date &amp; time <input type="datetime-local" step="60" data-f="taken" class="${it.needs ? "needs-in" : ""}" value="${it.needs === "date" ? "" : it.taken.slice(0, 16)}"></label>
         ${it.needs && it.kind === "photo" ? `<button class="link fix" data-guess>Guess date…</button>` : ""}
@@ -2405,6 +2407,42 @@ function rvRow(it) {
   </div>`;
 }
 
+const fmtAlt = (d) => d.length > 10 ? fmtWhen(d) : fmtDay(d);
+
+function clashHtml(it) {
+  // the file name and the photo disagree about when it was taken
+  const later = it.taken.slice(0, 10) > it.date_alt.slice(0, 10);
+  return `<div class="clash">
+    <div>The file name says <b>${fmtAlt(it.date_alt)}</b>, but the date saved inside the photo is <b>${fmtWhen(it.taken)}</b>.
+      ${later ? `<span class="muted">The date inside is later — that's often when a photo was downloaded, copied or edited.</span>` : ""}</div>
+    <div class="clash-btns">
+      <button class="ghost" data-clash="name">Use ${fmtDay(it.date_alt)} <span class="muted">(file name)</span></button>
+      <button class="ghost" data-clash="inside">Keep ${fmtDay(it.taken)} <span class="muted">(inside photo)</span></button>
+    </div>
+  </div>`;
+}
+
+async function resolveDates(ids, use) {
+  try {
+    const r = await api("/api/resolve-dates", { ids, use });
+    replaceItems(r.items);
+    toast(`${plural(r.resolved, "photo")} ${use === "name" ? "now use the date from the file name" : "keep the date saved inside"}.`);
+    renderClashBar();
+    refreshState();
+  } catch (e) { fail(e); }
+}
+
+function renderClashBar() {
+  const all = R.items.filter(i => i.needs === "check");
+  const picked = all.filter(i => R.sel.has(i.id));
+  $("#rv-clash").hidden = !all.length;
+  if (!all.length) return;
+  const byName = picked.filter(i => i.taken.slice(0, 10) > i.date_alt.slice(0, 10)).length;
+  $("#rv-clash-text").innerHTML = `<b>${plural(all.length, "photo has", "photos have")} a different date in ${all.length === 1 ? "its" : "their"} file name than inside.</b>
+    ${picked.length ? `For the ${n(picked.length)} selected${byName ? ` (${n(byName)} with a later date inside, like a download date)` : ""}:` : "Select some to choose for all of them at once."}`;
+  $("#rv-clash-name").disabled = $("#rv-clash-inside").disabled = !picked.length;
+}
+
 function updateSel() {
   const total = R.items.length, k = R.sel.size;
   $("#rv-all").checked = k === total && total > 0;
@@ -2414,6 +2452,7 @@ function updateSel() {
   const ready = (R.mode === "inbox" ? R.items : R.items.filter(i => R.sel.has(i.id))).filter(i => !i.needs).length;
   $("#rv-save").textContent = R.mode === "inbox" ? `Save & file ${plural(ready, "photo")}` : `Save changes (${n(ready)})`;
   $("#rv-save").disabled = !ready;
+  renderClashBar();
 }
 
 function replaceItems(updated) {
@@ -2447,6 +2486,8 @@ $("#rv-list").addEventListener("click", (e) => {
   if (e.target.closest("[data-guess]")) return openGuesser(it, () => { loadReview(); refreshState(); });
   const rs = e.target.closest("[data-rstar]");
   if (rs) return edit([it.id], { rating: +rs.dataset.rstar === it.rating ? 0 : +rs.dataset.rstar });
+  const cl = e.target.closest("[data-clash]");
+  if (cl) return resolveDates([it.id], cl.dataset.clash);
   const fx = e.target.closest("[data-fix]");
   if (fx) return edit([it.id], fx.dataset.fix === "file" ? { use_file_date: true } : { date_only: true });
   const un = e.target.closest("[data-untag]");
@@ -2478,6 +2519,8 @@ function reloadRows(ids) {
   };
 }
 
+$("#rv-clash-name").onclick = () => resolveDates(R.items.filter(i => i.needs === "check" && R.sel.has(i.id)).map(i => i.id), "name");
+$("#rv-clash-inside").onclick = () => resolveDates(R.items.filter(i => i.needs === "check" && R.sel.has(i.id)).map(i => i.id), "inside");
 $("#rv-all").onchange = (e) => {
   R.sel = new Set(e.target.checked ? R.items.map(i => i.id) : []);
   renderReview();
@@ -2488,7 +2531,7 @@ $("#rv-save").onclick = () => {
   // Drive Preview files everything; the other views save only the ticked photos
   const pool = R.mode === "inbox" ? R.items : R.items.filter(i => R.sel.has(i.id));
   const waiting = pool.filter(i => i.needs).length;
-  if (waiting && !confirm(`${plural(waiting, "photo still needs", "photos still need")} a date or time and will wait here. Save and file the others now?`)) return;
+  if (waiting && !confirm(`${plural(waiting, "photo still needs", "photos still need")} a date, a time or a date check and will wait here. Save and file the others now?`)) return;
   const ids = pool.filter(i => !i.needs).map(i => i.id);
   if (!ids.length) return;
   api("/api/organize/apply", { ids }).then(() => {

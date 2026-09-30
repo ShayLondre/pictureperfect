@@ -1168,7 +1168,36 @@ GROUP_GAP = 14 * 86400   # photos sharing a name more than two weeks apart are s
 NEEDS_DATE = ("file",)            # no date anywhere: the person adds one
 NEEDS_TIME = ("filename",)        # date from the old file name, but no time
 NO_TIME = ("filename", "manual_date")
-NEEDS_SQL = "date_source IN ('file', 'filename')"
+# photos whose file name says a different date than the date saved inside them (date_alt)
+# wait too, until the person picks the right one
+NEEDS_SQL = "(date_source IN ('file', 'filename') OR date_alt IS NOT NULL)"
+# how far apart the two dates may be before they count as different: over a day and a half,
+# so time zones (phones name files in UTC) and date-only names never trigger it
+DATE_CLASH_SECONDS = 36 * 3600
+
+
+def waits(r):
+    """True while a photo can't be filed yet: no date, no time, or two dates that disagree."""
+    try:
+        alt = r["date_alt"]
+    except (KeyError, IndexError):
+        alt = None
+    return r["date_source"] in NEEDS_DATE + NEEDS_TIME or bool(alt)
+
+
+def date_clash(taken, filename):
+    """If `filename` holds a date that is clearly different from `taken`, return it
+    ('YYYY-MM-DDTHH:MM:SS', or just 'YYYY-MM-DD' when the name has no time); else None."""
+    fn, has_time, _ = date_from_filename(filename)
+    if not fn or not taken:
+        return None
+    try:
+        gap = abs(iso_to_ts(fn) - iso_to_ts(taken[:19]))
+    except (ValueError, OverflowError):
+        return None
+    if gap <= DATE_CLASH_SECONDS:
+        return None
+    return fn if has_time else fn[:10]
 
 
 class Library:
@@ -1204,9 +1233,15 @@ class Library:
                              ("rating", "INTEGER"), ("rating_pending", "INTEGER DEFAULT 0"),
                              ("scene", "TEXT"), ("faces_done", "INTEGER DEFAULT 0"), ("people", "TEXT"),
                              ("pair_of", "INTEGER"), ("gps_precision", "TEXT"), ("gps_radius", "REAL"),
-                             ("place_id", "INTEGER")):
+                             ("place_id", "INTEGER"), ("date_alt", "TEXT"), ("date_ok", "INTEGER DEFAULT 0")):
                 if col not in cols:
                     self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
+            self.db.commit()
+            first_date_check = "date_alt" not in cols
+            # once a date is chosen by hand (or copied, or guessed), the name-vs-inside question is settled
+            self.db.execute("""CREATE TRIGGER IF NOT EXISTS files_date_alt_clear AFTER UPDATE OF date_source ON files
+                WHEN NEW.date_alt IS NOT NULL AND NEW.date_source NOT IN ('exif', 'sidecar')
+                BEGIN UPDATE files SET date_alt=NULL WHERE id=NEW.id; END""")
             self.db.commit()
         self.et = exiftool or ExifTool()
         self.geo = geo or Geo()
@@ -1221,6 +1256,8 @@ class Library:
         self._dupes = None
         self._loc = None
         self._gm = None
+        if first_date_check:
+            self._check_dates()     # a library from before this check: look through it once
 
     # ---------- db helpers ----------
     def q(self, sql, args=()):
@@ -1311,7 +1348,8 @@ class Library:
             SUM(CASE WHEN status='active' AND lat IS NULL AND loc_skip=0 AND pair_of IS NULL THEN 1 ELSE 0 END) AS no_location,
             SUM(CASE WHEN status='set_aside' THEN 1 ELSE 0 END) AS set_aside,
             SUM(CASE WHEN status='active' AND batch IS NOT NULL AND pair_of IS NULL THEN 1 ELSE 0 END) AS inbox,
-            SUM(CASE WHEN status='active' AND pair_of IS NOT NULL THEN 1 ELSE 0 END) AS raw_pairs
+            SUM(CASE WHEN status='active' AND pair_of IS NOT NULL THEN 1 ELSE 0 END) AS raw_pairs,
+            SUM(CASE WHEN status='active' AND pair_of IS NULL AND date_alt IS NOT NULL THEN 1 ELSE 0 END) AS date_check
             FROM files""")[0]
         out = {k: (v or 0) for k, v in r.items()}
         out["dup_groups"] = self._dup_count
@@ -1428,6 +1466,10 @@ class Library:
             job.done = min(len(todo), i + len(chunk))
 
         self._pair_up()
+        if todo:
+            fresh = set(todo)
+            self._check_dates([r["id"] for r in self.q(
+                "SELECT id, path FROM files WHERE status='active' AND pair_of IS NULL") if r["path"] in fresh])
         self._make_thumbs(job)
         self._hash_same_sizes(job)
         self._fill_places(job)
@@ -2114,6 +2156,58 @@ class Library:
             })
         guesses.sort(key=lambda g: -g["strength"])
         return {"looked_at": len(rows), "guesses": guesses[:5]}
+
+    def _check_dates(self, ids=None):
+        """Flag photos whose file name holds a different date than the one saved inside them —
+        e.g. a download or edit date inside, the real date in the name. They wait in Drive Preview
+        until the person picks the right date. Returns how many are newly flagged."""
+        sql = "SELECT id, path, taken, date_source, date_alt, date_ok, batch FROM files WHERE status='active' AND pair_of IS NULL"
+        args = []
+        if ids is not None:
+            ids = [int(i) for i in ids]
+            if not ids:
+                return 0
+            sql += " AND id IN (%s)" % ",".join("?" * len(ids))
+            args = ids
+        changes, newly = [], 0
+        for r in self.q(sql, args):
+            want = None
+            if not r["date_ok"] and r["date_source"] in ("exif", "sidecar"):
+                want = date_clash(r["taken"], os.path.basename(r["path"]))
+            if want != r["date_alt"]:
+                batch = r["batch"]
+                if want and not r["date_alt"]:
+                    newly += 1
+                    batch = batch or "date-check"    # so it shows up in Drive Preview
+                changes.append((want, batch, r["id"]))
+        if changes:
+            self.x("UPDATE files SET date_alt=?, batch=? WHERE id=?", changes, many=True)
+        return newly
+
+    def resolve_dates(self, ids, use):
+        """Pick one of the two dates for photos flagged by _check_dates:
+        use='name' takes the date from the file name, use='inside' keeps the date saved in the photo."""
+        ids = [int(i) for i in ids]
+        rows = self.q("SELECT id, date_alt FROM files WHERE date_alt IS NOT NULL AND id IN (%s)"
+                      % ",".join("?" * len(ids)), ids) if ids else []
+        if use == "name":
+            timed = [(r["date_alt"], r["id"]) for r in rows if len(r["date_alt"]) > 10]
+            day_only = [(r["date_alt"] + "T00:00:00", r["id"]) for r in rows if len(r["date_alt"]) == 10]
+            if timed:
+                self.x("UPDATE files SET taken=?, date_source='manual', date_pending=1, filedates=0, date_alt=NULL "
+                       "WHERE id=?", timed, many=True)
+            if day_only:
+                self.x("UPDATE files SET taken=?, date_source='manual_date', date_pending=1, filedates=0, date_alt=NULL "
+                       "WHERE id=?", day_only, many=True)
+        elif use == "inside":
+            self.x("UPDATE files SET date_ok=1, date_alt=NULL WHERE id=?", [(r["id"],) for r in rows], many=True)
+        else:
+            raise ValueError("Choose the date from the name or from inside the photo.")
+        self.invalidate()
+        s = self.settings()
+        fresh = self.q("SELECT * FROM files WHERE id IN (%s) ORDER BY taken, path" % ",".join("?" * len(ids)), ids) if ids else []
+        final = {c["id"]: c["new"] for c in self.plan()}
+        return {"items": [self._review_public(r, s, (), final) for r in fresh], "resolved": len(rows)}
 
     def set_date_only(self, ids, date):
         d = parse_iso((date or "").strip()[:10] + "T00:00:00")
@@ -3269,7 +3363,9 @@ class Library:
         out["dupe"] = r["id"] in dup_ids
         out["pending"] = bool(r["gps_pending"] or r["date_pending"] or r["tags_pending"] or r["rating_pending"])
         out["needs"] = ("date" if r["date_source"] in NEEDS_DATE else
-                        "time" if r["date_source"] in NEEDS_TIME else None)
+                        "time" if r["date_source"] in NEEDS_TIME else
+                        "check" if r.get("date_alt") else None)
+        out["date_alt"] = r.get("date_alt")
         return out
 
     def edit(self, ids, title=None, taken=None, shift=None, add_tags=None, remove_tags=None,
@@ -3519,7 +3615,7 @@ class Library:
             photos.append(dict(self._split_name(r, new), id=r["id"], name=os.path.basename(r["path"]), path=r["path"],
                                taken=r["taken"], date_source=r["date_source"], place=r["place"], kind=r["kind"],
                                thumb=r["thumb"], tags=split_tags(r["tags"]), raw=raws.get(r["id"]),
-                               lat=r["lat"], lon=r["lon"], needs=r["date_source"] in NEEDS_DATE + NEEDS_TIME,
+                               lat=r["lat"], lon=r["lon"], needs=waits(r), date_alt=r.get("date_alt"),
                                tidy=new == r["path"]))
         dated = sorted([d for d in subs.values() if d["name"][:1].isdigit()], key=lambda d: d["name"], reverse=True)
         other = sorted([d for d in subs.values() if not d["name"][:1].isdigit()], key=lambda d: d["name"].lower())
@@ -3584,7 +3680,7 @@ class Library:
     def tidy_preview(self, ids, title=None, names=None, shift=0, place=None, replace_place=False, remove_place=False):
         s = self.settings()
         rows = [r for r in self._tidy_rows(ids, title, names, shift, place, replace_place, remove_place)
-                if r["date_source"] not in NEEDS_DATE + NEEDS_TIME]
+                if not waits(r)]
         sel = set(r["id"] for r in rows)
         # trips stay together in the month they began (counting photos not selected that share the name)
         starts = {}
@@ -3704,7 +3800,7 @@ class Library:
         taken_paths = set(r["path"].lower() for r in rows)
         changes, moving = [], []
         for r in rows:
-            if r["date_source"] in NEEDS_DATE + NEEDS_TIME:
+            if waits(r):
                 continue
             target = self.target_for(r, s)
             if target == r["path"]:
@@ -3739,7 +3835,7 @@ class Library:
             for raw in raws.get(lead["id"], ()):
                 target = os.path.splitext(lead_new.get(lead["id"], lead["path"]))[0] + norm_ext(os.path.splitext(raw["path"])[1])
                 pending = raw["gps_pending"] or raw["date_pending"] or raw["tags_pending"] or raw["rating_pending"] or not raw["filedates"]
-                if lead["date_source"] in NEEDS_DATE + NEEDS_TIME:
+                if waits(lead):
                     continue
                 if target != raw["path"] or pending:
                     if target.lower() != raw["path"].lower() and (

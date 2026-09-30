@@ -612,7 +612,7 @@ def latest_map_build():
         with urllib.request.urlopen(req, timeout=30) as r:
             builds = json.load(r)
     except Exception as e:
-        raise RuntimeError("Downloading maps needs an internet connection (%s)." % e)
+        raise RuntimeError("Saving maps needs an internet connection — try again when you're online.")
     key = sorted(b["key"] for b in builds)[-1]
     return "https://build.protomaps.com/" + key
 

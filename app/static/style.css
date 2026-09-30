@@ -875,3 +875,4 @@ main:has(> #v-locations:not([hidden])) { padding: 16px 20px; flex: 1; min-height
   .pl-insp { border-left: 0; border-top: 1px solid var(--line); }
   .pl-top { flex-wrap: wrap; }
 }
+.pl-filter { width: 230px; flex: none; padding: 5px 10px; font-size: 13px; border-radius: 8px; }

@@ -2990,8 +2990,21 @@ class Library:
             """SELECT id, lat, lon, gps_precision FROM files WHERE status='active' AND pair_of IS NULL
                AND lat IS NOT NULL""")]
 
-    def places_photos(self, mode="none", ids=None, limit=3000):
-        """Photos for the filmstrip: those without a location (with suggestions), or a given set."""
+    def places_photos(self, mode="none", ids=None, limit=3000, q=""):
+        """Photos for the filmstrip: those without a location (with suggestions), those that
+        already have one (to fix a wrong place, optionally filtered), or a given set."""
+        if mode == "located" and not ids:
+            where, args = ["status='active' AND pair_of IS NULL AND lat IS NOT NULL"], []
+            for word in (q or "").split():
+                like = "%" + word.replace("%", "").replace("_", "") + "%"
+                where.append("(place LIKE ? OR city LIKE ? OR path LIKE ? OR title LIKE ? OR tags LIKE ? OR taken LIKE ?)")
+                args += [like] * 5 + [word.replace(".", "-").replace("/", "-") + "%"]
+            w = " AND ".join(where)
+            rows = self.q("SELECT * FROM files WHERE %s ORDER BY taken DESC, path LIMIT ?" % w, args + [limit])
+            total = self.q("SELECT COUNT(*) AS n FROM files WHERE " + w, args)[0]["n"]
+            return {"total": total, "items": [dict(
+                self.public(r), precision=r["gps_precision"] or "exact", needs_date=r["date_source"] in NEEDS_DATE,
+                suggest=None) for r in rows]}
         if ids:
             ids = [int(i) for i in ids][:limit]
             rows = self.q("SELECT * FROM files WHERE id IN (%s) AND status='active' ORDER BY taken, path"

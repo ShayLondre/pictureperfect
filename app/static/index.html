@@ -366,9 +366,11 @@
           <div class="pl-strip-head">
             <div class="seg small" id="pl-src">
               <button data-v="none" class="on">Need a location</button>
+              <button data-v="located">Has a location</button>
               <button data-v="here" hidden>On the map</button>
               <button data-v="ids" hidden>Chosen</button>
             </div>
+            <input id="pl-filter" class="pl-filter" placeholder="Filter: place, folder, date (2025.07)…" autocomplete="off" hidden>
             <b id="pl-count"></b>
             <span class="muted small" id="pl-hint">Click to select · Shift-click for a range · double-click to view</span>
             <span class="grow"></span>

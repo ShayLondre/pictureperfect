@@ -539,7 +539,9 @@ def places_points():
 @app.route("/api/places/photos", methods=["GET", "POST"])
 def places_photos():
     b = request.get_json(silent=True) or {}
-    return jsonify(lib().places_photos(ids=b.get("ids")))
+    a = request.args
+    return jsonify(lib().places_photos(mode=b.get("mode") or a.get("mode", "none"), ids=b.get("ids"),
+                                       q=b.get("q") or a.get("q", "")))
 
 
 @app.route("/api/places/apply", methods=["POST"])

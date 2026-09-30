@@ -1405,7 +1405,9 @@ async function loadPlaces() {
 async function plLoadPhotos() {
   let r;
   try {
-    r = PL.src === "none" ? await api("/api/places/photos") : await api("/api/places/photos", { ids: PL.ids });
+    r = PL.src === "none" ? await api("/api/places/photos")
+      : PL.src === "located" ? await api("/api/places/photos", { mode: "located", q: $("#pl-filter").value.trim() })
+      : await api("/api/places/photos", { ids: PL.ids });
   } catch (e) { return fail(e); }
   PL.photos = r.items; PL.total = r.total;
   const have = new Set(PL.photos.map(p => p.id));
@@ -1417,9 +1419,11 @@ function plShowSource(src, ids) {
   PL.src = src;
   if (ids) PL.ids = ids;
   $$("#pl-src button").forEach(b => { b.classList.toggle("on", b.dataset.v === src); if (b.dataset.v === src) b.hidden = false; });
-  PL.sel = new Set(src === "none" ? [] : PL.ids);
+  PL.sel = new Set(src === "none" || src === "located" ? [] : PL.ids);
   PL.shown = 240;
-  plLoadPhotos().then(() => { renderInsp(); if (src !== "none") plFit(); });
+  $("#pl-filter").hidden = src !== "located";
+  if (src === "located") $("#pl-filter").focus();
+  plLoadPhotos().then(() => { renderInsp(); if (src !== "none" && src !== "located") plFit(); });
 }
 
 // open Places with particular photos chosen, e.g. from Tidy Up
@@ -1440,14 +1444,15 @@ function renderFilm() {
       <img loading="lazy" src="/thumb/${p.id}" alt=""><span class="ck"></span>${p.kind === "video" ? `<span class="vid">▶</span>` : ""}${tag}</div>`;
   });
   if (PL.photos.length > PL.shown) html += `<button class="ghost more" id="pl-more">Show ${n(Math.min(240, PL.photos.length - PL.shown))} more</button>`;
-  if (!PL.photos.length) html = `<div class="empty2">${PL.src === "none" ? "✓ Every photo has a location. Click a group of photos on the map to change theirs." : "No photos here."}</div>`;
+  if (!PL.photos.length) html = `<div class="empty2">${PL.src === "none" ? "✓ Every photo has a location. To change some, use Has a location, or click a group of photos on the map."
+    : PL.src === "located" ? "No photos with a location match that." : "No photos here."}</div>`;
   $("#pl-film").innerHTML = html;
   plSelChanged();
 }
 
 function plSelChanged() {
   const k = PL.sel.size;
-  $("#pl-count").textContent = PL.src === "none"
+  $("#pl-count").textContent = PL.src === "none" || PL.src === "located"
     ? `${n(k)} of ${plural(PL.total, "photo")} selected${PL.total > PL.photos.length ? ` (showing ${n(PL.photos.length)} newest)` : ""}`
     : `${n(k)} of ${plural(PL.photos.length, "photo")} selected`;
   $("#pl-apply").textContent = `Apply to ${plural(k, "Photo", "Photos")}`;
@@ -1491,6 +1496,8 @@ $("#pl-film").addEventListener("wheel", (e) => {   // a mouse wheel scrolls the 
 $("#pl-all").onclick = () => { PL.photos.forEach(p => PL.sel.add(p.id)); renderFilm(); };
 $("#pl-none").onclick = () => { PL.sel.clear(); renderFilm(); };
 $("#pl-src").onclick = (e) => { const b = e.target.closest("button"); if (b) plShowSource(b.dataset.v); };
+let plFilterTimer;
+$("#pl-filter").addEventListener("input", () => { clearTimeout(plFilterTimer); plFilterTimer = setTimeout(() => { PL.sel.clear(); plLoadPhotos().then(plFit); }, 300); });
 $("#pl-show").onclick = (e) => {
   const b = e.target.closest("button"); if (!b) return;
   PL.show = b.dataset.v;

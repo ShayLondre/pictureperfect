@@ -173,6 +173,13 @@ def import_commit():
     return jsonify({"ok": True})
 
 
+@app.route("/api/import/undo", methods=["POST"])
+def import_undo():
+    l = lib()
+    l.start_job("Undoing the last photos you organized", l.undo_import_batch)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/import/cancel", methods=["POST"])
 def import_cancel():
     lib().cancel_import()

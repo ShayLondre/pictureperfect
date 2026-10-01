@@ -36,7 +36,12 @@ update themselves from the newest release. Always test before publishing and bum
 - GitHub test workflows: `test-map-download.yml`, `test-online-map.yml` (screenshots with internet), `test-updater.yml` (update on a real Mac).
   Their results are uploaded to the "map-test" pre-release.
 
-## Latest version when these notes were written: 1.7.7
-Recent work: automatic updates; Duplicates compare (side by side + Flip); RAW previews upright; Prune shows RAW+JPEG pairs once;
+## Latest version when these notes were written: 1.7.8
+1.7.8: Import is a working queue — `pending_import` stays open after a commit; items get `done` (batch number) and
+`done_folder`, `pending_import["batches"]` records each batch (file ids for Undo, `/api/import/undo` → `undo_import_batch`
+trashes that batch's copies). Front end: Remaining/Organized/All/Duplicates filter, trip headings (same country, ≤2 days apart),
+"same as the photos around it" location suggestion, Copy/Paste location. Folders are always Month › Event (`settings()` forces it;
+the menus in Import and Tidy Up are gone).
+Earlier: automatic updates; Duplicates compare (side by side + Flip); RAW previews upright; Prune shows RAW+JPEG pairs once;
 import previews never reused between imports; Date & Time box moves only ticked photos; online/offline map; Places screen;
 Tidy Up find & replace, bulk location change/removal; coordinates in any format.

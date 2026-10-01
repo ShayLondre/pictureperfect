@@ -1377,6 +1377,7 @@ class Library:
         s = dict(DEFAULT_SETTINGS)
         for r in self.q("SELECT key, value FROM settings"):
             s[r["key"]] = r["value"]
+        s["folders"] = "month_group"   # the owner's choice: every photo is filed as Month › Event
         return s
 
     def set_settings(self, values):
@@ -2525,7 +2526,10 @@ class Library:
             out.append(d)
         groups = [{"key": g["key"], "name": g["name"], "start": g["start"], "end": g["end"], "count": g["count"],
                    "thumbs": g["thumbs"][:1]} for g in self.groups()[:200]]
-        return {"source": p["source"], "items": out, "settings": self.settings(), "albums": groups,
+        bs = p.get("batches", [])
+        batches = [{"n": b["n"], "count": len(b["items"]), "event": b["event"], "ids": b["ids"],
+                    "can_undo": k == len(bs) - 1 and not b["trashed_source"]} for k, b in enumerate(bs)]
+        return {"source": p["source"], "items": out, "settings": self.settings(), "albums": groups, "batches": batches,
                 "token": p.get("token", ""),
                 "library": os.path.basename(self.root.rstrip(os.sep)) or self.root}
 
@@ -2601,6 +2605,7 @@ class Library:
         chosen = [it for it in p["items"] if it["i"] in want]
         rated = {}
         copied_ok = []
+        item_rel = {}   # which new file each photo became, so it can be shown as organized afterwards
         names = {int(k): v for k, v in (names or {}).items()}
         times = {int(k): v for k, v in (times or {}).items() if v}
         tags = {int(k): v for k, v in (tags or {}).items() if v}
@@ -2638,6 +2643,7 @@ class Library:
                     continue
                 copied_ok.append(it["src"])
                 rel = os.path.relpath(dest, self.root)
+                item_rel[it["i"]] = rel
                 if it.get("thumb"):
                     seed[rel] = os.path.join(tdir, "%d.jpg" % it["i"])
                 if it["i"] in names:
@@ -2660,7 +2666,6 @@ class Library:
                         pass
             job.done += 1
         if not copied_ok:
-            self.cancel_import()
             raise RuntimeError("Nothing could be copied: " + (copy_failed[0]["error"] if copy_failed else "no photos"))
         batch = "import-" + stamp
         self._thumb_seed = seed
@@ -2669,7 +2674,6 @@ class Library:
                 result = self.scan(job, batch=batch, only=os.path.relpath(dest_dir, self.root))
         finally:
             self._thumb_seed = None
-            self.cancel_import()
         if rated:
             self.x("UPDATE files SET rating=?, rating_pending=1 WHERE path=?",
                    [(v, k) for k, v in rated.items()], many=True)
@@ -2722,6 +2726,11 @@ class Library:
             if fid:
                 self.set_location([fid], pl["lat"], pl["lon"], pl.get("label"), pl.get("name"))
         waiting = self.q("SELECT COUNT(*) AS n FROM files WHERE batch=? AND pair_of IS NULL AND " + NEEDS_SQL, (batch,))[0]["n"]
+        item_fid = {}
+        for i, rel in item_rel.items():
+            row = self.q("SELECT id FROM files WHERE path=?", (rel,))
+            if row:
+                item_fid[i] = row[0]["id"]
         filed = {}
         if ids and rename:
             filed = self.apply(job, ids)
@@ -2729,6 +2738,26 @@ class Library:
         if delete_source and copied_ok:
             job.step("Moving the originals to the Trash", len(copied_ok))
             trashed_src = self._trash_paths(copied_ok, job)
+        # the import stays open: what was just organized is marked, the rest waits for its turn
+        paths = {r["id"]: r["path"] for r in self.q(
+            "SELECT id, path FROM files WHERE id IN (%s)" % ",".join("?" * len(item_fid)), list(item_fid.values()))} if item_fid else {}
+        batches = p.setdefault("batches", [])
+        bn = (batches[-1]["n"] + 1) if batches else 1
+        done_items = []
+        for it in chosen:
+            if it["i"] not in item_rel:
+                continue   # couldn't be copied: it stays waiting
+            path = paths.get(item_fid.get(it["i"]))
+            folder = os.path.dirname(path) if path else ""
+            if folder.split(os.sep)[0] == INBOX:
+                folder = "Drive Preview"
+            it["done"], it["done_folder"] = bn, folder.replace(os.sep, " › ")
+            done_items.append(it["i"])
+        batches.append({"n": bn, "items": done_items, "batch": batch, "event": event or "", "ids": ids,
+                        "trashed_source": bool(delete_source and trashed_src)})
+        remaining = sum(1 for it in p["items"] if it["status"] == "new" and not it.get("done")
+                        and it.get("raw_of") is None)
+        result.update({"import_batch": bn, "remaining": remaining})
         result.update({"copied": len(copied_ok), "copy_failed": copy_failed[:50],
                        "skipped": len(p["items"]) - len(chosen),
                        "imported_ids": ids, "waiting": waiting, "renamed": bool(rename),
@@ -2736,6 +2765,28 @@ class Library:
                        "folders": sorted(set(os.path.dirname(r["path"]) for r in self.q(
                            "SELECT path FROM files WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)))[:6] if ids else []})
         return result
+
+    def undo_import_batch(self, job):
+        """Take back the last batch organized from the open import: its copies go to the Trash
+        (the originals are still where they came from) and its photos wait to be imported again."""
+        p = getattr(self, "pending_import", None)
+        if not p or not p.get("batches"):
+            raise ValueError("There's nothing to undo.")
+        last = p["batches"][-1]
+        if last["trashed_source"]:
+            raise ValueError("The originals of those photos were moved to the Trash, so this can't be undone here.")
+        ids = [int(i) for i in last["ids"]]
+        rows = self.q("SELECT * FROM files WHERE id IN (%s) AND status='active' AND pair_of IS NULL"
+                      % ",".join("?" * len(ids)), ids) if ids else []
+        job.step("Moving the copies to the Trash", len(rows))
+        trashed, aside = self._trash(rows, job) if rows else (0, 0)
+        self.invalidate()
+        for it in p["items"]:
+            if it.get("done") == last["n"]:
+                it["done"], it["done_folder"] = None, None
+        p["batches"].pop()
+        return {"import_undo": True, "items": last["items"], "event": last["event"],
+                "trashed": trashed, "set_aside": aside}
 
     def _trash_paths(self, paths, job=None):
         """Put files outside the library (e.g. on a memory card) in the Trash."""

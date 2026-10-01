@@ -99,6 +99,14 @@
 
   <!-- Import: rename before importing -->
   <section id="v-import" class="view import-view" hidden>
+    <div class="im-banner" id="im-banner" hidden>
+      <span class="im-banner-check" aria-hidden="true">✓</span>
+      <div class="im-banner-text" id="im-banner-text"></div>
+      <button class="link" id="im-banner-lib">See in Library</button>
+      <button class="link" id="im-banner-undo">Undo</button>
+      <span class="spacer"></span>
+      <button class="link" id="im-banner-close">Dismiss</button>
+    </div>
     <div class="stepper" id="im-steps">
       <div class="st" data-s="1"><b>1</b>Import</div><i></i>
       <div class="st" data-s="2"><b>2</b>Rename</div><i></i>
@@ -116,7 +124,7 @@
     <div class="im-main" id="im-main" hidden>
       <div class="im-left">
         <h1 class="serif">Organize &amp; Rename</h1>
-        <p class="sub small">Review and edit filenames, dates and destination before importing.</p>
+        <p class="sub small">Tick the photos that belong together and organize them. The rest wait here for their turn.</p>
         <div class="detail" id="im-detail"></div>
         <div class="panel">
           <div class="panel-head" id="im-all-head">Applies to the Ticked Photos</div>
@@ -127,6 +135,7 @@
           <div class="fl">Location
             <div class="placerow"><button class="ghost placepick" id="im-place">+ Add a place</button><button class="link" id="im-place-clear" hidden>Clear</button></div></div>
           <div class="hint" id="im-place-note">For photos without their own location. Photos with GPS keep their exact spot.</div>
+          <div class="im-loc-tools" id="im-loc-tools"></div>
           <div class="fl">Album
             <div class="placerow"><button class="ghost placepick" id="im-album">+ Add to an album…</button><button class="link" id="im-album-clear" hidden>Clear</button></div></div>
           <div class="hint" id="im-album-note">For photos that belong with ones already on your drive — they take the album's name and go in its folder, keeping their own dates. To add just one photo, click it and use Edit Metadata.</div>
@@ -155,8 +164,9 @@
           </div>
           <div class="im-tools">
             <div class="seg" id="im-filter">
-              <button data-k="" class="on">All</button>
-              <button data-k="new">New</button>
+              <button data-k="left" class="on">Remaining</button>
+              <button data-k="done">Organized</button>
+              <button data-k="">All</button>
               <button data-k="dup">Duplicates</button>
             </div>
             <div class="searchbox" id="im-search-box">
@@ -186,6 +196,7 @@
           <button class="dark" id="rv2-prune">Prune these photos</button>
           <button class="ghost" id="rv2-library">See them in Library</button>
           <button class="ghost" id="rv2-preview" hidden>Open Drive Preview</button>
+          <button class="link" id="rv2-shown">Show what was organized</button>
           <button class="link" id="rv2-again">Import more</button>
         </div>
       </div>
@@ -196,15 +207,11 @@
         <div class="dest-label">Destination</div>
         <div class="crumbs" id="im-dest"></div>
       </div>
-      <div class="bottom-opts">
-        <label class="opt">Create subfolders by:
-          <select id="im-folders">
-            <option value="month_group">Month › Event</option>
-            <option value="year_month">Year › Month</option>
-            <option value="year">Year</option>
-            <option value="none">No subfolders</option>
-          </select></label>
+      <div class="im-progress">
+        <div class="im-left-count" id="im-left-count"></div>
+        <div class="im-prog"><div id="im-prog"></div></div>
       </div>
+      <button class="ghost" id="im-sel-left">Select All Remaining</button>
       <div class="spacer"></div>
       <button class="ghost" id="im-cancel">Cancel</button>
       <button class="dark big" id="im-go">Import</button>
@@ -496,14 +503,7 @@
                 <option value="1">YYYY.MM.DD HHMM Event</option>
                 <option value="0">YYYY.MM.DD Event</option>
               </select></label>
-            <label class="fl">Folders
-              <select id="tu-folders">
-                <option value="month_group">Month › Trip</option>
-                <option value="year_month">Year › Month</option>
-                <option value="year">Year</option>
-                <option value="none">No folders</option>
-              </select></label>
-            <div class="hint" id="tu-folders-note"></div>
+            <div class="hint">Folders are always Month › Event, e.g. 2026.10 › 2026.10 Italy.</div>
           </div>
           <div class="panel" data-pane="date" hidden>
             <label class="fl">Date &amp; time of the first selected photo

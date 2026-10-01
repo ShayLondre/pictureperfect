@@ -131,6 +131,8 @@ async function poll() {
       loadAlbums();
       if (job.error && (IM.state === "checking" || IM.state === "running")) importScreen(IM.state === "running" ? "pick" : "start");
       if (res.import_check && !job.error) showImport();
+      else if (res.import_batch !== undefined && !job.error) imAfterBatch(res);
+      else if (res.import_undo && !job.error) imAfterUndo(res);
       else if (res.imported_ids !== undefined && !job.error) showImportReview(res);
       else if ((res.geotagged !== undefined || res.map_region) && !job.error) {
         if (res.map_region) plReloadMap();
@@ -362,9 +364,10 @@ document.addEventListener("keydown", (e) => {
 }, true);
 
 /* ------------------------------------------------------------------ import: rename before importing */
-const IM = { items: [], sel: new Set(), filter: "", view: "list", shown: 120, settings: {}, albums: [], source: "", state: "start",
+const IM = { items: [], sel: new Set(), filter: "left", view: "list", shown: 120, settings: {}, albums: [], source: "", state: "start",
              base: null, over: {}, times: {}, tags: {}, stars: {}, focus: null, q: "", editing: false,
-             inuse: {}, asking: new Set(), num: {}, places: {}, bplace: null };
+             inuse: {}, asking: new Set(), num: {}, places: {}, bplace: null,
+             batches: [], groups: [], groupOf: {}, banner: null, clip: null, albumOf: {} };
 const MATCH_LABEL = { exact: "Already in your library", similar: "Looks like one you have", repeat: "Repeated in this folder" };
 const EXT = (n) => { const e = n.slice(n.lastIndexOf(".")).toLowerCase(); return e === ".jpeg" ? ".jpg" : e; };
 
@@ -387,6 +390,8 @@ function importScreen(state) {
   $("#im-go").disabled = state === "running";
   $("#im-cancel").hidden = state === "running";
   setStep({ start: 1, checking: 1, pick: 2, running: 3, review: 4 }[state] || 1);
+  if (state === "start" || state === "checking") IM.banner = null;
+  renderImBanner();
 }
 
 async function openImportTab() {
@@ -400,20 +405,23 @@ async function openImportTab() {
 async function showImport(r) {
   if (!r) { try { r = await api("/api/import/pending"); } catch (e) { return fail(e); } }
   if (!r.items) return importScreen("start");
-  IM.items = r.items.filter(i => i.raw_of === null || i.raw_of === undefined);
+  IM.items = imSorted(r.items.filter(i => i.raw_of === null || i.raw_of === undefined));
+  IM.batches = r.batches || [];
+  imComputeGroups();
   IM.settings = r.settings || {};
   IM.albums = r.albums || [];
   IM.source = r.source;
   IM.token = r.token || Date.now().toString(16);
   IM.shown = 120;
-  IM.sel = new Set(IM.items.filter(i => i.status === "new").map(i => i.i));
+  // a fresh import starts with every new photo ticked; once some are organized, you tick the next group yourself
+  IM.sel = new Set(IM.batches.length ? [] : IM.items.filter(i => i.status === "new" && !i.done).map(i => i.i));
+  IM.banner = null;
   IM.over = {}; IM.times = {}; IM.tags = {}; IM.stars = {}; IM.q = ""; IM.editing = false;
   IM.inuse = {}; IM.asking = new Set();   // names on the drive may have changed since the last import
   IM.places = {}; IM.bplace = null;
-  IM.focus = (IM.items.find(i => i.status === "new") || IM.items[0] || {}).i;
+  IM.focus = (IM.items.find(i => i.status === "new" && !i.done) || IM.items[0] || {}).i;
   $("#im-search").value = ""; $("#im-search").hidden = true;
   $("#im-adv").hidden = true;
-  $("#im-folders").value = IM.settings.folders || "month_group";
   $("#im-event").value = "";
   $("#im-format").value = IM.settings.time === "0" ? "0" : "1";
   // only photos with a real time move with the Date & Time box (date-only ones keep their day, as on import)
@@ -427,11 +435,199 @@ async function showImport(r) {
   $("#op-delete").checked = false;
   $("#op-delete-note").hidden = true;
   $("#op-delete").closest(".opt").hidden = !S.state.mac;
-  $$("#im-filter button").forEach(b => b.classList.toggle("on", b.dataset.k === ""));
-  IM.filter = "";
+  imSetFilter("left");
   showTab("import", true);
+  if (IM.batches.length && !imCounts().left) return showImportDone();
   importScreen("pick");
   renderImport();
+}
+
+/* ------------------------------------------------------------------ import as a working queue
+   Photos are organized in batches (one trip at a time). Organized photos stay on the screen, faded,
+   as a record; the rest wait for their turn. "Remaining" only counts new photos — ones you may
+   already have are under Duplicates. */
+function imSorted(items) {   // in the order they were taken, so a camera's photos fall between the phone's
+  return items.slice().sort((a, b) => (a.taken || "9") < (b.taken || "9") ? -1 : (a.taken || "9") > (b.taken || "9") ? 1
+    : a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+function imCounts() {
+  const base = IM.items.filter(i => i.status === "new" || i.done);
+  const done = base.filter(i => i.done).length;
+  return { total: base.length, done, left: base.length - done };
+}
+const imLeft = (i) => i.status === "new" && !i.done;
+function imSetFilter(k) {
+  IM.filter = k;
+  $$("#im-filter button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
+  IM.shown = 120;
+}
+function imMerge(r) {   // the import changed on the drive (a batch was organized or undone): keep what still applies
+  IM.items = imSorted(r.items.filter(i => i.raw_of === null || i.raw_of === undefined));
+  IM.batches = r.batches || [];
+  const byI = new Map(IM.items.map(i => [i.i, i]));
+  [IM.over, IM.times, IM.tags, IM.stars, IM.places, IM.albumOf].forEach(o => Object.keys(o).forEach(k => {
+    const it = byI.get(+k); if (!it || (it.done && o !== IM.places)) delete o[k];   // a given place still shows on the faded row
+  }));
+  IM.inuse = {}; IM.asking = new Set();   // names on the drive have changed
+  imComputeGroups();
+}
+
+// photos from one trip: taken in the same country, with no more than two days between them
+function imCountry(i) { const a = (i.place || "").split(",").map(x => x.trim()).filter(Boolean); return a.length ? a[a.length - 1] : null; }
+function imComputeGroups() {
+  const runs = []; let cur = null, lastT = null;
+  IM.items.forEach(it => {
+    if (!it.taken) {
+      if (!cur || !cur.nodate) { cur = { country: null, nodate: true, items: [] }; runs.push(cur); }
+      cur.items.push(it); return;
+    }
+    const c = imCountry(it), t = isoToMs(it.taken);
+    const gap = lastT !== null && t - lastT > 2 * 86400000;
+    if (!cur || cur.nodate || gap || (c && cur.country && c !== cur.country)) { cur = { country: c, items: [] }; runs.push(cur); }
+    if (c && !cur.country) cur.country = c;
+    cur.items.push(it); lastT = t;
+  });
+  IM.groups = runs.length > 1 && runs.some(g => g.country) ? runs : [];
+  IM.groupOf = {};
+  IM.groups.forEach((g, k) => { g.k = k; g.items.forEach(i => (IM.groupOf[i.i] = g)); });
+}
+function imGroupLabel(g) {
+  if (g.nodate) return "No date yet";
+  const cities = {};
+  g.items.forEach(i => { const c = (i.city || "").replace(/^Near /, ""); if (c && c !== "At sea") cities[c] = (cities[c] || 0) + 1; });
+  const top = Object.keys(cities).sort((a, b) => cities[b] - cities[a]);
+  const where = top.length ? top.slice(0, 2).join(", ") + (top.length > 2 ? ` +${top.length - 2}` : "") : "";
+  return [where, g.country].filter(Boolean).join(" · ") || "No location";
+}
+function imGroupDates(g) {
+  const d = g.items.map(i => i.taken).filter(Boolean).sort();
+  if (!d.length) return "";
+  const [y1, m1, d1] = d[0].slice(0, 10).split("-").map(Number), [y2, m2, d2] = d[d.length - 1].slice(0, 10).split("-").map(Number);
+  if (y1 === y2 && m1 === m2 && d1 === d2) return `${MONTHS[m1 - 1]} ${d1}, ${y1}`;
+  if (y1 === y2 && m1 === m2) return `${MONTHS[m1 - 1]} ${d1} – ${d2}, ${y1}`;
+  if (y1 === y2) return `${MONTHS[m1 - 1]} ${d1} – ${MONTHS[m2 - 1]} ${d2}, ${y1}`;
+  return `${MONTHS[m1 - 1]} ${d1}, ${y1} – ${MONTHS[m2 - 1]} ${d2}, ${y2}`;
+}
+const PIN_SVG = `<svg viewBox="0 0 24 24" class="pin-i" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>`;
+function imGroupHead(g) {
+  const all = g.items.filter(i => i.status === "new" || i.done), left = all.filter(imLeft);
+  const unticked = left.filter(i => !IM.sel.has(i.i));
+  const cnt = left.length === all.length ? plural(all.length, "photo") : left.length ? `${n(left.length)} of ${n(all.length)} left` : `all ${n(all.length)} organized`;
+  const dates = imGroupDates(g);
+  return `<div class="grp"><span class="gname">${PIN_SVG}${esc(imGroupLabel(g))}</span><span class="gsub">${esc(dates)}${dates ? " · " : ""}${cnt}</span><span class="spacer"></span>` +
+    (unticked.length && IM.filter !== "done" ? `<button class="link" data-gsel="${g.k}">Tick these ${n(left.length)}</button>` : "") + `</div>`;
+}
+function imWithGroups(list, row) {   // rows, with a heading where a new trip starts
+  let prev = null;
+  return list.map(it => {
+    const g = IM.groups.length ? IM.groupOf[it.i] : null;
+    const head = g && g !== prev ? imGroupHead(g) : "";
+    prev = g || prev;
+    return head + row(it);
+  }).join("");
+}
+
+// ----- locations: the place of the photos around it, and copy & paste
+function imLoc(it) {   // the exact spot a photo will get (its own GPS, or one you gave it)
+  if (IM.places[it.i]) return IM.places[it.i];
+  if (it.lat !== null && it.lat !== undefined) return { lat: it.lat, lon: it.lon, label: it.place || "", name: null };
+  return null;
+}
+function imKm(a, b) {
+  const r = Math.PI / 180, dl = (b.lat - a.lat) * r, dn = (b.lon - a.lon) * r;
+  const h = Math.sin(dl / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dn / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+const sameLoc = (a, b) => !!a && !!b && Math.abs(a.lat - b.lat) < 1e-6 && Math.abs(a.lon - b.lon) < 1e-6;
+/* A photo without a location, taken between photos that were taken at the same spot (within 2 km and
+   a few hours), was almost certainly taken there too — e.g. a camera without GPS next to a phone. */
+function imSuggest(it) {
+  if (it.done || imPlace(it) || !it.taken || !it.has_time) return null;
+  const k = IM.items.indexOf(it), t = isoToMs(it.taken);
+  const near = (step) => {
+    for (let j = k + step; j >= 0 && j < IM.items.length; j += step) {
+      const o = IM.items[j];
+      if (!o.taken || !o.has_time) continue;
+      const l = imLoc(o);
+      if (l) return { l, hrs: Math.abs(isoToMs(o.taken) - t) / 3600000 };
+    }
+    return null;
+  };
+  const a = near(-1), b = near(1);
+  if (a && b && a.hrs <= 6 && b.hrs <= 6) return imKm(a.l, b.l) <= 2 ? a.l : null;
+  if (a && a.hrs <= 1 && !(b && b.hrs <= 6)) return a.l;
+  if (b && b.hrs <= 1 && !(a && a.hrs <= 6)) return b.l;
+  return null;
+}
+const imCopyOf = (l) => ({ lat: l.lat, lon: l.lon, label: l.label || "", name: l.name || null });
+function imSetPlaces(ids, l) { ids.forEach(i => { IM.places[i] = imCopyOf(l); }); renderImport(); }
+
+function renderImBanner() {
+  const b = IM.banner, show = !!b && (IM.state === "pick" || IM.state === "running");
+  $("#im-banner").hidden = !show;
+  if (!show) return;
+  const c = imCounts();
+  $("#im-banner-text").innerHTML = `<b>Organized.</b> ${plural(b.count, "photo")}${b.where ? " into " + esc(b.where) : ""}` +
+    (c.left ? ` · ${n(c.left)} still to do` : "");
+  $("#im-banner-undo").hidden = !b.can_undo;
+}
+async function imAfterBatch(res) {
+  api("/api/job/dismiss", {}).then(refreshState).catch(() => {});
+  let r;
+  try { r = await api("/api/import/pending"); } catch (e) { r = {}; }
+  if (!r.items) return showImportReview(res);
+  imMerge(r);
+  const last = IM.batches[IM.batches.length - 1] || {};
+  const fs = (res.folders || []).map(f => f.split("/").join(" › "));
+  IM.banner = { count: IM.items.filter(i => i.done && i.done === last.n).length || res.copied || 0,
+    where: fs.length ? fs[0] + (fs.length > 1 ? ` and ${plural(fs.length - 1, "more folder")}` : "") : "",
+    can_undo: !!last.can_undo };
+  // the next trip starts with a clean slate
+  $("#im-event").value = ""; $("#im-tags").value = "";
+  IM.bplace = null; IM.album = null; IM.dateTouched = false; IM.editing = false;
+  IM.sel = new Set();
+  if (res.copy_failed && res.copy_failed.length) toast(`${plural(res.copy_failed.length, "photo")} couldn't be copied and ${res.copy_failed.length === 1 ? "is" : "are"} still waiting (e.g. ${res.copy_failed[0].name}).`, 7000);
+  if (!imCounts().left) return showImportDone();
+  imSetFilter("left");
+  IM.focus = (IM.items.find(imLeft) || {}).i;
+  importScreen("pick");
+  imSetBase();
+  renderImport();
+}
+async function imAfterUndo(res) {
+  api("/api/job/dismiss", {}).then(refreshState).catch(() => {});
+  let r;
+  try { r = await api("/api/import/pending"); } catch (e) { return importScreen("start"); }
+  if (!r.items) return importScreen("start");
+  imMerge(r);
+  IM.sel = new Set((res.items || []).filter(i => IM.items.some(x => x.i === i)));
+  $("#im-event").value = res.event || "";
+  IM.banner = null; IM.dateTouched = false;
+  imSetFilter("left");
+  IM.focus = (res.items || [])[0];
+  importScreen("pick");
+  imSetBase();
+  renderImport();
+  toast(`Undone. The copies went to the Trash and those ${plural((res.items || []).length, "photo")} are ticked again.`, 5000);
+}
+function showImportDone() {
+  showTab("import", true);
+  importScreen("review");
+  const done = IM.items.filter(i => i.done);
+  const src = (IM.source || "").split("/").filter(Boolean).pop() || "This folder";
+  $("#rv2-title").textContent = `${src} is all done`;
+  $("#rv2-sub").textContent = `All ${plural(done.length, "photo")} are organized${IM.batches.length > 1 ? `, in ${n(IM.batches.length)} batches` : ""}.`;
+  const per = {};
+  done.forEach(i => { const f = i.done_folder || "Drive Preview"; per[f] = (per[f] || 0) + 1; });
+  $("#rv2-tree").innerHTML = Object.keys(per).sort().map(f => `<div class="t">${esc(f)} <span class="muted">· ${plural(per[f], "photo")}</span></div>`).join("");
+  const waiting = per["Drive Preview"] || 0;
+  $("#rv2-wait").hidden = !waiting;
+  $("#rv2-wait").textContent = waiting ? `${plural(waiting, "photo has", "photos have")} no date yet and ${waiting === 1 ? "is" : "are"} waiting in Drive Preview.` : "";
+  $("#rv2-preview").hidden = !waiting;
+  IM.lastIds = IM.batches.flatMap(b => b.ids || []);
+  $("#rv2-prune").hidden = !IM.lastIds.length;
+  $("#rv2-shown").hidden = !done.length;
+  loadAlbums();
 }
 
 function imBatchTags() {
@@ -531,7 +727,8 @@ function fmtShort(iso) {
 }
 function imVisible() {
   const q = IM.q.toLowerCase();
-  return IM.items.filter(i => (!IM.filter || (IM.filter === "dup" ? i.status !== "new" : i.status === "new")) &&
+  const f = IM.filter;
+  return IM.items.filter(i => (!f || (f === "left" && imLeft(i)) || (f === "done" && i.done) || (f === "dup" && i.status !== "new" && !i.done)) &&
     (!q || i.name.toLowerCase().includes(q) || (imFinalName(i) || "").toLowerCase().includes(q) || (i.place || "").toLowerCase().includes(q)));
 }
 function nameParts(it) {
@@ -597,22 +794,29 @@ function renderImport() {
   computeNumbers();
   const sel = IM.items.filter(i => IM.sel.has(i.i));
   const size = sel.reduce((a, i) => a + (i.size || 0), 0);
-  const dups = IM.items.filter(i => i.status !== "new").length;
+  const dups = IM.items.filter(i => i.status !== "new" && !i.done).length;
+  const cnt = imCounts();
   const cams = [...new Set(IM.items.map(i => i.camera).filter(Boolean))];
   const srcName = IM.source.split("/").filter(Boolean).pop();
-  $("#im-count").textContent = `${plural(sel.length, "photo")} selected`;
+  $("#im-count").textContent = sel.length ? `${plural(sel.length, "photo")} selected` : cnt.left ? "Nothing selected yet" : "Everything is organized";
   $("#im-from").innerHTML = `From: ${esc(srcName)}${cams.length === 1 ? " — " + esc(cams[0]) : ""} &nbsp;›&nbsp; Estimated size: ${fmtSize(size) || "0 KB"}`;
   $$("#im-filter button").forEach(b => {
     const k = b.dataset.k;
-    const c = k === "new" ? IM.items.length - dups : k === "dup" ? dups : IM.items.length;
-    b.textContent = `${k === "new" ? "New" : k === "dup" ? "Duplicates" : "All"} (${n(c)})`;
+    const [label, c] = { left: ["Remaining", cnt.left], done: ["Organized", cnt.done], dup: ["Duplicates", dups], "": ["All", IM.items.length] }[k];
+    b.textContent = `${label} (${n(c)})`;
+    b.hidden = (k === "dup" && !dups) || (k === "done" && !cnt.done);
   });
-  const first = sel.find(i => imTaken(i)) || IM.items.find(i => imTaken(i));
+  $("#im-left-count").innerHTML = `<b>${n(cnt.left)} of ${n(cnt.total)}</b> remaining${cnt.left ? "" : " ✓"}`;
+  $("#im-prog").style.width = (cnt.total ? (100 * cnt.done / cnt.total).toFixed(1) : 0) + "%";
+  $("#im-sel-left").disabled = !IM.items.some(i => imLeft(i) && !IM.sel.has(i.i));
+  $("#im-cancel").textContent = !cnt.done ? "Cancel" : cnt.left ? "Done for now" : "Close";
+  renderImBanner();
+  const first = sel.find(i => imTaken(i)) || IM.items.find(i => imLeft(i) && imTaken(i));
   $("#im-preview").textContent = first ? imFinalName(first) : "—";
   if (!IM.dateTouched) imSetBase();
   const sh = imShift();
   const ticked = sel.length;
-  $("#im-all-head").textContent = `Applies to the ${plural(ticked, "Ticked Photo", "Ticked Photos")}`;
+  $("#im-all-head").textContent = ticked ? `Applies to the ${plural(ticked, "Ticked Photo", "Ticked Photos")}` : "Tick the photos that go together";
   $("#im-date-note").textContent = sh ? `The ${plural(ticked, "ticked photo")} move${ticked === 1 ? "s" : ""} by ${fmtShift(sh)}, keeping their order. Unticked photos don't change.` :
     (IM.base ? `Shown: the first ticked photo. Change it to fix a camera clock — all ${plural(ticked, "ticked photo")} move by the same amount. For just one photo, click it and use “Change this photo's date & time”.`
       : "None of the ticked photos have a date yet.");
@@ -625,6 +829,11 @@ function renderImport() {
   $("#im-place-note").textContent = IM.bplace
     ? `Goes on ${plural(sel.length - withGps - sel.filter(i => IM.places[i.i]).length, "photo")} without a location.${withGps ? ` ${plural(withGps, "photo")} with GPS keep${withGps === 1 ? "s" : ""} ${withGps === 1 ? "its" : "their"} exact spot.` : ""}`
     : (withGps === sel.length && sel.length ? "All selected photos already have a location from GPS." : "For photos without their own location. Photos with GPS keep their exact spot.");
+  const bare = sel.filter(i => !imPlace(i)), sugg = bare.filter(i => imSuggest(i));
+  $("#im-loc-tools").innerHTML =
+    (sugg.length ? `<button class="ghost small-btn" id="im-fill-sugg">Use the place of the photos around ${sugg.length === 1 ? "it" : "them"} for ${plural(sugg.length, "photo")}</button>` : "") +
+    (IM.clip && bare.length ? `<button class="ghost small-btn" id="im-paste-all">Paste ${esc(shortPlace(IM.clip.label) || "the copied place")} onto ${bare.length === 1 ? "the ticked photo" : `the ${n(bare.length)} ticked photos`} without a location</button>` : "") +
+    (IM.clip ? `<div class="hint">Copied: ${esc(shortPlace(IM.clip.label) || fmtLatLon(IM.clip.lat, IM.clip.lon))} · <button class="link" id="im-clip-clear">Clear</button></div>` : "");
   renderDest();
   renderDetail();
   const list = imVisible();
@@ -634,54 +843,68 @@ function renderImport() {
   $("#im-more").hidden = list.length <= IM.shown;
   $("#im-more").textContent = `Show more (${n(list.length - IM.shown)})`;
   const on = $("#op-rename").checked;
-  $("#im-go").textContent = sel.length ? `Import ${plural(sel.length, "Photo")}${on ? "" : " (keep names)"}` : "Import";
+  $("#im-go").textContent = sel.length ? `Organize ${plural(sel.length, "Photo")}${on ? "" : " (keep names)"}` : "Organize";
   $("#im-go").disabled = !sel.length || IM.state === "running";
 }
 
 function renderTable(list) {
-  const allOn = list.length > 0 && list.every(i => IM.sel.has(i.i));
-  const rows = list.slice(0, IM.shown).map(it => {
-    const on = IM.sel.has(it.i);
+  const open = list.filter(i => !i.done);
+  const allOn = open.length > 0 && open.every(i => IM.sel.has(i.i));
+  const rows = imWithGroups(list.slice(0, IM.shown), it => {
+    const done = !!it.done;
+    const on = !done && IM.sel.has(it.i);
     const np = nameParts(it);
     const t = imTaken(it);
     const when = t ? fmtShort(t) : null;
-    const newCell = !np ? `<span class="nodate">No date — <button class="link" data-adddate>add one</button></span>`
+    const sug = !done && !imPlace(it) ? imSuggest(it) : null;
+    const newCell = done ? `<div class="orgd"><span class="orgtag">Organized</span><span class="orgdest">→ ${esc(it.done_folder || "")}</span></div>`
+      : !on ? `<span class="ready">${it.status === "new" ? "Ready to import <span>· tick to name it</span>" : "Left out — you may already have it <span>· tick to import anyway</span>"}</span>`
+      : !np ? `<span class="nodate">No date — <button class="link" data-adddate>add one</button></span>`
       : !$("#op-rename").checked ? `<span class="muted">Keeps its name</span>`
       : `<div class="fname ${IM.over[it.i] !== undefined ? "mine" : ""}"><span>${esc(np.prefix)}</span><input data-name value="${esc(np.np)}" placeholder="name" spellcheck="false">${numSuffix(it) ? `<span class="num" title="Another photo has this name, so this one is numbered">${esc(numSuffix(it))}</span>` : ""}<span>${esc(np.ext)}</span></div>` +
         (imAlbum(it) ? `<div class="albumtag" title="Goes in the album's folder">📁 ${esc(imAlbum(it).folder)}</div>` : "");
-    return `<div class="tr ${on ? "" : "off"} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}">
-      <div class="c-chk"><input type="checkbox" data-sel ${on ? "checked" : ""}></div>
+    return `<div class="tr ${done ? "done" : on ? "" : "off"} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}">
+      <div class="c-chk">${done ? `<span class="orgmark" title="Organized">✓</span>` : `<input type="checkbox" data-sel ${on ? "checked" : ""} aria-label="Tick ${esc(it.name)}">`}</div>
       <div class="c-img"><img loading="lazy" src="/import-thumb/${it.i}?v=${IM.token}" alt=""></div>
       <div class="c-old">${esc(it.name)}${it.raw ? `<span class="tagx">+ ${esc(EXT(it.raw).slice(1).toUpperCase())}</span>` : ""}
         ${it.status !== "new" ? `<span class="tagx warn">${MATCH_LABEL[it.status]}</span>` : it.kind === "video" ? `<span class="tagx">Video</span>` : ""}</div>
       <div class="c-arrow">→</div>
       <div class="c-new">${newCell}</div>
       <div class="c-date">${when ? `${when.d}${imHasTime(it) ? `<br><span class="muted">${when.t}</span>` : `<br><span class="muted">time unknown</span>`}` : `<span class="muted">—</span>`}</div>
-      <div class="c-loc ${imPlace(it) && imPlace(it).how !== "gps" ? "set" : ""}">${imPlace(it) ? `<svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span class="t" title="${esc(imPlace(it).label)}${imPlace(it).how === "gps" ? " (from the photo's GPS)" : " (added by you)"}">${esc(shortPlace(imPlace(it).label))}</span>` : `<button class="link" data-addplace>+ Add</button>`}</div>
+      <div class="c-loc ${imPlace(it) && imPlace(it).how !== "gps" ? "set" : ""}">${imPlace(it) ? `<svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span class="t" title="${esc(imPlace(it).label)}${imPlace(it).how === "gps" ? " (from the photo's GPS)" : " (added by you)"}">${esc(shortPlace(imPlace(it).label))}</span>`
+        : done ? `<span class="muted">—</span>`
+        : sug ? `<button class="sugg" data-sugg title="Same place as the photos taken just before and after it — click to use it">+ ${esc((shortPlace(sug.label) || "Same place").split(",")[0])}?</button>`
+        : `<button class="link" data-addplace>+ Add</button>`}</div>
       <div class="c-size">${fmtSize(it.size)}</div>
     </div>`;
-  }).join("");
+  });
+  const allDone = IM.filter === "left" && !imCounts().left;
   $("#im-table").innerHTML = `<div class="th">
-      <div class="c-chk"><input type="checkbox" id="im-all" ${allOn ? "checked" : ""}></div>
+      <div class="c-chk"><input type="checkbox" id="im-all" ${allOn ? "checked" : ""} ${open.length ? "" : "disabled"} aria-label="Tick all"></div>
       <div class="c-img">Preview</div><div class="c-old">Current Filename</div><div class="c-arrow"></div>
       <div class="c-new">New Filename <span class="muted">(editable)</span></div>
       <div class="c-date">Date &amp; Time</div><div class="c-loc">Location</div><div class="c-size">Size</div>
-    </div>` + (rows || `<div class="empty">Nothing here.</div>`);
+    </div>` + (rows || `<div class="empty">${allDone ? "Nothing left to organize ✓" : IM.filter === "done" ? "Nothing organized yet. Photos you organize show up here, faded, as a record." : "Nothing here."}</div>`);
 }
 
 function renderGrid(list) {
   const starts = imGroupStart();
-  $("#im-grid").innerHTML = list.slice(0, IM.shown).map(it => {
-    const on = IM.sel.has(it.i);
+  $("#im-grid").innerHTML = imWithGroups(list.slice(0, IM.shown), it => {
+    const done = !!it.done;
+    const on = !done && IM.sel.has(it.i);
     const nn = imFinalName(it);
     const f = imFolder(it, starts);
-    return `<div class="ic ${on ? "on" : ""} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}" title="${nn ? esc((f || []).join(" › ")) : ""}">
+    if (done) return `<div class="ic done ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}" title="Organized into ${esc(it.done_folder || "")}">
+      <div class="ph"><img loading="lazy" src="/import-thumb/${it.i}?v=${IM.token}" alt=""><span class="orglabel">✓ Organized</span></div>
+      <div class="oldn">${esc(it.name)}</div><div class="oldn">✓ ${esc(it.done_folder || "")}</div></div>`;
+    return `<div class="ic ${on ? "on" : ""} ${IM.focus === it.i ? "focus" : ""}" data-i="${it.i}" title="${nn && on ? esc((f || []).join(" › ")) : ""}">
       <div class="ph"><img loading="lazy" src="/import-thumb/${it.i}?v=${IM.token}" alt=""><span class="tick" data-sel>${on ? "✓" : ""}</span>
         ${it.status !== "new" ? `<span class="tagr warn">${MATCH_LABEL[it.status]}</span>` : it.raw ? `<span class="tagr">RAW+JPEG</span>` : it.kind === "video" ? `<span class="tagr">Video</span>` : ""}</div>
       <div class="oldn">${esc(it.name)}</div>
-      ${nn ? ($("#op-rename").checked ? `<div class="newn ${IM.over[it.i] !== undefined ? "mine" : ""}">${esc(nn)}</div>` : `<div class="oldn">Keeps its name for now</div>`) : `<div class="note">No date — add one on the left</div>`}
+      ${!on ? `<div class="oldn">${it.status === "new" ? "Ready to import" : "Left out — you may already have it"}</div>`
+        : nn ? ($("#op-rename").checked ? `<div class="newn ${IM.over[it.i] !== undefined ? "mine" : ""}">${esc(nn)}</div>` : `<div class="oldn">Keeps its name for now</div>`) : `<div class="note">No date — add one on the left</div>`}
     </div>`;
-  }).join("");
+  });
 }
 
 function renderDest() {
@@ -713,8 +936,13 @@ function renderDetail() {
     <div class="dmeta">${esc(bits)}</div>
     <div class="dmeta">${when ? `${when.d}${imHasTime(it) ? " · " + when.t : ""}` : `<span class="nodate">No date yet</span>`}</div>
     ${imAlbum(it) ? `<div class="dmeta">📁 ${esc(imAlbum(it).folder)}</div>` : ""}
-    ${imPlace(it) ? `<div class="dmeta">📍 ${esc(shortPlace(imPlace(it).label))}${imPlace(it).how === "gps" ? "" : " <span class='muted'>(added)</span>"}</div>` : ""}
-    ${!IM.editing ? `<div class="drow"><button class="ghost small-btn" id="im-time-btn">Change this photo's date &amp; time</button><button class="ghost small-btn" id="im-edit-btn">Edit this photo…</button></div>` : `
+    ${imPlace(it) ? `<div class="dmeta">📍 ${esc(shortPlace(imPlace(it).label))}${imPlace(it).how === "gps" ? "" : " <span class='muted'>(added)</span>"}${imLoc(it) ? ` · <button class="link" id="im-copy-loc">${sameLoc(IM.clip, imLoc(it)) ? "Copied ✓" : "Copy this location"}</button>` : ""}</div>` : ""}
+    ${it.done ? `<div class="dmeta">📁 Organized into ${esc(it.done_folder || "")}</div>` : ""}
+    ${!it.done && !imPlace(it) ? (() => { const sg = imSuggest(it); return `<div class="noloc"><div>No location for this photo.</div>` +
+      (sg ? `<button class="ghost small-btn" id="im-use-sugg">Use ${esc(shortPlace(sg.label) || "that place")} — same as the photos around it</button>` : "") +
+      (IM.clip && !sameLoc(sg, IM.clip) ? `<button class="ghost small-btn" id="im-paste-loc">Paste ${esc(shortPlace(IM.clip.label) || "the copied place")}</button>` : "") +
+      (!sg && !IM.clip ? `<div class="hint">Click a photo taken at the same spot and press “Copy this location”, then come back and paste it.</div>` : "") + `</div>`; })() : ""}
+    ${it.done ? "" : !IM.editing ? `<div class="drow"><button class="ghost small-btn" id="im-time-btn">Change this photo's date &amp; time</button><button class="ghost small-btn" id="im-edit-btn">Edit this photo…</button></div>` : `
     <div class="dedit">
       <div class="panel-head">This photo only</div>
       <label class="fl">Name<input id="ed-name" value="${esc(np)}" placeholder="Event or place"></label>
@@ -725,6 +953,12 @@ function renderDetail() {
       <div class="fl">Rating<span class="stars big" id="ed-stars">${starsHtml(IM.stars[it.i] || 0, "data-estar")}</span></div>
       <div class="drow"><button class="link" id="ed-reset">Reset this photo</button><button class="dark" id="ed-done">Done</button></div>
     </div>`}`;
+  const cp = $("#im-copy-loc");
+  if (cp) cp.onclick = () => { IM.clip = imCopyOf(imLoc(it)); toast("Location copied. Click a photo without one and press Paste — or paste onto all the ticked photos on the left.", 5000); renderImport(); };
+  const us = $("#im-use-sugg");
+  if (us) us.onclick = () => imSetPlaces([it.i], imSuggest(it));
+  const pl = $("#im-paste-loc");
+  if (pl) pl.onclick = () => imSetPlaces([it.i], IM.clip);
   const eb = $("#im-edit-btn");
   if (eb) eb.onclick = () => { IM.editing = true; renderDetail(); setTimeout(() => $("#ed-name").focus(), 20); };
   const tb = $("#im-time-btn");
@@ -773,14 +1007,23 @@ function focusRow(i, edit) {
   renderImport();
 }
 
+function imGroupTick(e) {
+  const b = e.target.closest("[data-gsel]"); if (!b) return false;
+  const g = IM.groups[+b.dataset.gsel];
+  if (g) g.items.filter(imLeft).forEach(i => IM.sel.add(i.i));
+  renderImport();
+  return true;
+}
 $("#im-table").addEventListener("click", (e) => {
   if (IM.state === "running") return;
   if (e.target.id === "im-all") {
-    imVisible().forEach(i => (e.target.checked ? IM.sel.add(i.i) : IM.sel.delete(i.i)));
+    imVisible().filter(i => !i.done).forEach(i => (e.target.checked ? IM.sel.add(i.i) : IM.sel.delete(i.i)));
     return renderImport();
   }
+  if (imGroupTick(e)) return;
   const row = e.target.closest(".tr"); if (!row) return;
   const i = +row.dataset.i;
+  if (e.target.closest("[data-sugg]")) { const it = IM.items.find(x => x.i === i); const sg = it && imSuggest(it); if (sg) imSetPlaces([i], sg); return; }
   if (e.target.matches("[data-sel]")) { e.target.checked ? IM.sel.add(i) : IM.sel.delete(i); return renderImport(); }
   if (e.target.closest("[data-adddate]")) return focusRow(i, true);
   if (e.target.closest("[data-addplace]")) {
@@ -807,13 +1050,31 @@ $("#im-table").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.target.value = imNamePart(IM.items.find(x => x.i === +e.target.closest(".tr").dataset.i)); e.target.blur(); }
 });
 $("#im-grid").onclick = (e) => {
-  const c = e.target.closest(".ic"); if (!c || IM.state === "running") return;
+  if (IM.state === "running" || imGroupTick(e)) return;
+  const c = e.target.closest(".ic"); if (!c) return;
   const i = +c.dataset.i;
-  if (e.target.closest("[data-sel]")) { IM.sel.has(i) ? IM.sel.delete(i) : IM.sel.add(i); return renderImport(); }
+  if (e.target.closest("[data-sel]") && !c.classList.contains("done")) { IM.sel.has(i) ? IM.sel.delete(i) : IM.sel.add(i); return renderImport(); }
   focusRow(i);
 };
-$("#im-filter").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; IM.filter = b.dataset.k;
-  $$("#im-filter button").forEach(x => x.classList.toggle("on", x === b)); IM.shown = 120; renderImport(); };
+$("#im-filter").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; imSetFilter(b.dataset.k); renderImport(); };
+$("#im-sel-left").onclick = () => { IM.items.filter(imLeft).forEach(i => IM.sel.add(i.i)); renderImport(); };
+$("#im-loc-tools").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  const sel = IM.items.filter(i => IM.sel.has(i.i));
+  if (b.id === "im-fill-sugg") {
+    const pairs = sel.filter(i => !imPlace(i)).map(i => [i, imSuggest(i)]).filter(p => p[1]);
+    pairs.forEach(([i, l]) => { IM.places[i.i] = imCopyOf(l); });
+    renderImport();
+  } else if (b.id === "im-paste-all" && IM.clip) imSetPlaces(sel.filter(i => !imPlace(i)).map(i => i.i), IM.clip);
+  else if (b.id === "im-clip-clear") { IM.clip = null; renderImport(); }
+};
+$("#im-banner-close").onclick = () => { IM.banner = null; renderImBanner(); };
+$("#im-banner-lib").onclick = () => showTab("browse");
+$("#im-banner-undo").onclick = () => {
+  if (!confirm("Undo the photos you just organized? Their copies on your drive go to the Trash, and the photos are ticked again here so you can redo them.")) return;
+  api("/api/import/undo", {}).then(() => { importScreen("running"); S.lastJobFinished = false; refreshState(); }).catch(fail);
+};
+$("#rv2-shown").onclick = () => { imSetFilter("done"); importScreen("pick"); renderImport(); };
 $("#im-view").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; IM.view = b.dataset.v;
   $$("#im-view button").forEach(x => x.classList.toggle("on", x === b)); renderImport(); };
 $("#im-search-btn").onclick = () => { const s2 = $("#im-search"); s2.hidden = !s2.hidden; if (!s2.hidden) s2.focus(); else { s2.value = ""; IM.q = ""; renderImport(); } };
@@ -825,11 +1086,6 @@ $("#im-place").onclick = () => openPicker([], "Location for these photos", null,
   (c) => { IM.bplace = c; renderImport(); });
 $("#im-place-clear").onclick = () => { IM.bplace = null; renderImport(); };
 $("#im-adv-btn").onclick = () => { $("#im-adv").hidden = !$("#im-adv").hidden; };
-$("#im-folders").onchange = async (e) => {
-  IM.settings.folders = e.target.value;
-  renderImport();
-  try { await api("/api/organize/settings", { folders: e.target.value }); } catch (err) { fail(err); }
-};
 $("#im-album").onclick = () => {
   const sel = IM.items.filter(i => IM.sel.has(i.i));
   openGrouper([], sel, null, (g) => { IM.album = g; renderImport(); });
@@ -837,13 +1093,13 @@ $("#im-album").onclick = () => {
 $("#im-album-clear").onclick = () => { IM.album = null; renderImport(); };
 $("#op-rename").onchange = renderImport;
 $("#op-dupes").onchange = (e) => {
-  IM.items.filter(i => i.status !== "new").forEach(i => (e.target.checked ? IM.sel.delete(i.i) : IM.sel.add(i.i)));
+  IM.items.filter(i => i.status !== "new" && !i.done).forEach(i => (e.target.checked ? IM.sel.delete(i.i) : IM.sel.add(i.i)));
   renderImport();
 };
 $("#op-delete").onchange = (e) => ($("#op-delete-note").hidden = !e.target.checked);
 $("#im-cancel").onclick = async () => { await api("/api/import/cancel", {}); importScreen("start"); };
 $("#im-go").onclick = () => {
-  const include = IM.items.filter(i => IM.sel.has(i.i)).map(i => i.i);
+  const include = IM.items.filter(i => IM.sel.has(i.i) && !i.done).map(i => i.i);
   if (!include.length) return;
   if ($("#op-delete").checked && !confirm(`After copying, move the ${plural(include.length, "original")} to the Trash? You can drag them back out of the Trash until you empty it.`)) return;
   const al = albumChosen();
@@ -878,7 +1134,7 @@ function showImportReview(res) {
 $("#rv2-prune").onclick = () => openPickSet(IM.lastIds, "just imported");
 $("#rv2-library").onclick = () => { IM.state = "start"; showTab("browse"); };
 $("#rv2-preview").onclick = () => { IM.state = "start"; showTab("inbox"); };
-$("#rv2-again").onclick = () => importScreen("start");
+$("#rv2-again").onclick = () => { api("/api/import/cancel", {}).catch(() => {}); importScreen("start"); };
 
 $("#btn-import").onclick = async () => {
   let p = S.state.mac ? await pickFolder("Choose the folder or card with your photos") : prompt("Folder with new photos:");
@@ -2204,12 +2460,6 @@ $("#pk-save").onclick = async () => {
 /* ------------------------------------------------------------------ tidy up (photos already on the drive) */
 const TU = { folder: "", q: "", photos: [], folders: [], info: {}, sel: new Set(), names: {}, pv: {}, pvList: [],
              waiting: 0, filter: "", tab: "name", place: null, when: "", all: false, settings: {}, albums: [] };
-const TU_FOLDER_NOTE = {
-  month_group: "A folder for each month, and inside it one for each trip or event.",
-  year_month: "A folder for each year, with a folder for each month inside.",
-  year: "One folder per year.",
-  none: "No folders — every photo together, sorted by name.",
-};
 
 $("#tu-to-places").onclick = () => {
   if (!TU.sel.size) return toast("Select some photos first.");
@@ -2224,8 +2474,6 @@ async function loadTidy() {
   TU.photos = r.photos; TU.folders = r.folders; TU.settings = r.settings; TU.albums = r.albums;
   r.photos.forEach(p => (TU.info[p.id] = p));
   $("#tu-format").value = r.settings.time === "0" ? "0" : "1";
-  $("#tu-folders").value = r.settings.folders || "month_group";
-  $("#tu-folders-note").textContent = TU_FOLDER_NOTE[r.settings.folders || "month_group"] + " The same setting is used when you import.";
   $("#org-hl").value = r.settings.highlights || "5";
   $("#org-hl-note").textContent = r.settings.highlights === "off" ? "No Highlights folders are made."
     : `A "2025 Highlights" folder holds a copy of every ${r.settings.highlights === "4" ? "4- and 5-star" : "5-star"} photo from that year. The originals stay where they are.`;
@@ -2435,7 +2683,6 @@ $("#tu-place").onclick = () => openPicker([], "Location for the selected photos"
 $("#tu-place-clear").onclick = () => { TU.place = null; tuRefresh(); };
 $("#tu-prev-more").onclick = () => { TU.showAll = !TU.showAll; renderTidyPanel(); };
 $("#tu-format").onchange = async (e) => { try { await api("/api/organize/settings", { time: e.target.value }); await loadTidy(); tuRefresh(); } catch (err) { fail(err); } };
-$("#tu-folders").onchange = async (e) => { try { await api("/api/organize/settings", { folders: e.target.value }); await loadTidy(); tuRefresh(); } catch (err) { fail(err); } };
 $("#org-hl").onchange = async (e) => { try { await api("/api/organize/settings", { highlights: e.target.value }); loadTidy(); } catch (err) { fail(err); } };
 $("#btn-hl").onclick = () => api("/api/highlights", {}).then(() => { S.lastJobFinished = false; refreshState(); }).catch(fail);
 $("#btn-undo").onclick = () => {
